@@ -246,18 +246,6 @@ def df_quick_filter(df: pd.DataFrame, text: str, cols: list[str]):
         mask = mask | df[c].astype(str).str.contains(t, case=False, na=False)
     return df[mask]
 
-SHEET_ID = "바인더 입출고 관리대"
-
-df_hema = read_gsheet_csv(SHEET_ID, "HEMA 바인더 입출고 관리대장")
-df_sil  = read_gsheet_csv(SHEET_ID, "Silicon바인더 입출고 관리대장")
-
-st.subheader("HEMA 바인더 입출고")
-st.dataframe(df_hema, use_container_width=True)
-
-st.subheader("Silicon 바인더 입출고")
-st.dataframe(df_sil, use_container_width=True)
-
-
 
 # =========================
 # UI
