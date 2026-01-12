@@ -390,18 +390,6 @@ with tab_dash:
             st.altair_chart((line + points).interactive(), use_container_width=True)
 
 
-if mode2 == "단일색(수입검사) 점도":
-    df = single_df.copy()
-
-    # 필수 컬럼 체크
-    need_cols = ["입고일", "단일색잉크 Lot", "점도측정값(cP)"]
-    miss = [c for c in need_cols if c not in df.columns]
-    if miss:
-        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss}")
-    else:
-        df = df.dropna(subset=["입고일", "단일색잉크 Lot", "점도측정값(cP)"])
-        df["입고일"] = pd.to_datetime(df["입고일"])
-
         # ---- 필터 UI
         f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.6, 2.0])
         with f1:
