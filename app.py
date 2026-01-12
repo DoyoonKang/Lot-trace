@@ -8,25 +8,17 @@ st.set_page_config(
     layout="wide",
 )
 
+import requests
+from io import StringIO
+
 @st.cache_data(ttl=60, show_spinner=False)
 def read_gsheet_csv(sheet_id: str, sheet_name: str) -> pd.DataFrame:
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote(sheet_name)}"
-    return pd.read_csv(url)
+    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq"
+    r = requests.get(base, params={"tqx": "out:csv", "sheet": sheet_name}, timeout=20)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    return pd.read_csv(StringIO(r.text))
 
-
-
-
-import re
-from io import BytesIO
-from pathlib import Path
-import datetime as dt
-
-from urllib.parse import quote
-
-@st.cache_data(ttl=60, show_spinner=False)  # 60초마다 최신값
-def read_gsheet_csv(sheet_id: str, sheet_name: str) -> pd.DataFrame:
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote(sheet_name)}"
-    return pd.read_csv(url)
 
 
 import pandas as pd
@@ -313,7 +305,7 @@ if "입고일" in single_df.columns:
 tab_search, tab_input, tab_dash, tab_binder = st.tabs(["🔎 빠른검색", "✍️ 신규입력", "📊 대시보드", "📦 바인더 입출고"])
 
 with tab_binder:
-    SHEET_ID = "진짜_스프레드시트_ID로_교체"
+    SHEET_ID = "1H2fFxnf5AvpSlu-uoZ4NpTv8LYLNwTNAzvlntRQ7FS8"
 
     df_hema = read_gsheet_csv(SHEET_ID, "HEMA 바인더 입출고 관리대장")
     df_sil  = read_gsheet_csv(SHEET_ID, "Silicon바인더 입출고 관리대장")
