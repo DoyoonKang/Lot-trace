@@ -309,12 +309,86 @@ with tab_dash:
 
     st.divider()
 
-    left, right = st.columns([2, 1])
+with tab_dash:
+    b_total = len(binder_df)
+    s_total = len(single_df)
+    b_ng = int((binder_df.get("판정", pd.Series(dtype=str)) == "부적합").sum()) if "판정" in binder_df.columns else 0
+    s_ng = int((single_df.get("점도판정", pd.Series(dtype=str)) == "부적합").sum()) if "점도판정" in single_df.columns else 0
 
-st.subheader("점도 변화 추이 (로트별)")
-st.caption("데이터를 입력(저장)할 때마다 최신 데이터로 자동 반영됩니다.")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("바인더 기록", f"{b_total:,}")
+    c2.metric("바인더 부적합", f"{b_ng:,}")
+    c3.metric("단일색 기록", f"{s_total:,}")
+    c4.metric("단일색(점도) 부적합", f"{s_ng:,}")
 
-mode2 = st.radio("데이터 선택", ["단일색(수입검사) 점도", "바인더(제조/입고) 점도"], horizontal=True)
+    st.divider()
+
+    # =========================
+    # (1) 단일색 평균 점도 막대그래프
+    # =========================
+    st.subheader("단일색 평균 점도 (색상군별)")
+    if "색상군" in single_df.columns and "점도측정값(cP)" in single_df.columns:
+        chart_df = single_df[["색상군", "점도측정값(cP)"]].dropna()
+        st.bar_chart(chart_df.groupby("색상군")["점도측정값(cP)"].mean())
+    else:
+        st.info("단일색 데이터에 '색상군' 또는 '점도측정값(cP)' 컬럼이 없습니다.")
+
+    st.divider()
+
+    # =========================
+    # (2) 단일색 점도 변화 추이 (선 + Lot별 점)
+    # =========================
+    st.subheader("단일색 점도 변화 추이")
+    st.caption("데이터를 입력(저장)할 때마다 최신 데이터로 자동 반영됩니다.")
+
+    df = single_df.copy()
+    need_cols = ["입고일", "단일색잉크 Lot", "점도측정값(cP)"]
+    miss = [c for c in need_cols if c not in df.columns]
+    if miss:
+        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss}")
+    else:
+        df = df.dropna(subset=need_cols).copy()
+        df["입고일"] = pd.to_datetime(df["입고일"])
+        df = df.sort_values("입고일")
+
+        # 필터 UI
+        f1, f2 = st.columns(2)
+        with f1:
+            dmin = df["입고일"].min().date()
+            dmax = df["입고일"].max().date()
+            start = st.date_input("시작일", value=max(dmin, dmax - dt.timedelta(days=90)), key="trend_start")
+        with f2:
+            end = st.date_input("종료일", value=dmax, key="trend_end")
+
+        df = df[(df["입고일"].dt.date >= start) & (df["입고일"].dt.date <= end)]
+
+        lot_list = sorted(df["단일색잉크 Lot"].astype(str).unique().tolist())
+        default_pick = lot_list[-5:] if len(lot_list) > 5 else lot_list
+        pick = st.multiselect("표시할 단일색 Lot(복수 선택)", lot_list, default=default_pick, key="trend_lots")
+        if pick:
+            df = df[df["단일색잉크 Lot"].astype(str).isin(pick)]
+
+        if len(df) == 0:
+            st.info("선택한 조건에 해당하는 데이터가 없습니다.")
+        else:
+            tooltip_cols = ["입고일:T", "단일색잉크 Lot:N", "점도측정값(cP):Q"]
+
+            base = alt.Chart(df).encode(
+                x=alt.X("입고일:T", sort="ascending", title="입고일"),
+                y=alt.Y("점도측정값(cP):Q", title="점도(cP)"),
+                tooltip=tooltip_cols,
+            )
+
+            # ✅ 선은 하나로(추이 보기)
+            line = base.mark_line()
+
+            # ✅ 점은 Lot별 색
+            points = base.mark_point(size=80).encode(
+                color=alt.Color("단일색잉크 Lot:N", title="Lot")
+            )
+
+            st.altair_chart((line + points).interactive(), use_container_width=True)
+
 
 if mode2 == "단일색(수입검사) 점도":
     df = single_df.copy()
