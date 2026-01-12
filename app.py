@@ -1,3 +1,7 @@
+
+import altair as alt
+
+
 import streamlit as st
 import pandas as pd
 import datetime as dt
@@ -307,6 +311,120 @@ with tab_dash:
 
     left, right = st.columns([2, 1])
 
+st.subheader("점도 변화 추이 (로트별)")
+st.caption("데이터를 입력(저장)할 때마다 최신 데이터로 자동 반영됩니다.")
+
+mode2 = st.radio("데이터 선택", ["단일색(수입검사) 점도", "바인더(제조/입고) 점도"], horizontal=True)
+
+if mode2 == "단일색(수입검사) 점도":
+    df = single_df.copy()
+
+    # 필수 컬럼 체크
+    need_cols = ["입고일", "단일색잉크 Lot", "점도측정값(cP)"]
+    miss = [c for c in need_cols if c not in df.columns]
+    if miss:
+        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss}")
+    else:
+        df = df.dropna(subset=["입고일", "단일색잉크 Lot", "점도측정값(cP)"])
+        df["입고일"] = pd.to_datetime(df["입고일"])
+
+        # ---- 필터 UI
+        f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.6, 2.0])
+        with f1:
+            dmin = df["입고일"].min().date()
+            dmax = df["입고일"].max().date()
+            start = st.date_input("시작일", value=max(dmin, dmax - dt.timedelta(days=90)))
+        with f2:
+            end = st.date_input("종료일", value=dmax)
+        with f3:
+            if "색상군" in df.columns:
+                cg = st.multiselect("색상군", sorted(df["색상군"].dropna().unique().tolist()))
+            else:
+                cg = []
+        with f4:
+            if "제품코드" in df.columns:
+                pc = st.multiselect("제품코드", sorted(df["제품코드"].dropna().unique().tolist()))
+            else:
+                pc = []
+
+        df = df[(df["입고일"].dt.date >= start) & (df["입고일"].dt.date <= end)]
+        if cg and "색상군" in df.columns:
+            df = df[df["색상군"].isin(cg)]
+        if pc and "제품코드" in df.columns:
+            df = df[df["제품코드"].isin(pc)]
+
+        # 로트 선택(너무 많으면 보기 힘드니까 선택형)
+        lot_list = sorted(df["단일색잉크 Lot"].astype(str).unique().tolist())
+        pick = st.multiselect("표시할 단일색 Lot(복수 선택)", lot_list, default=lot_list[-5:] if len(lot_list) > 5 else lot_list)
+        if pick:
+            df = df[df["단일색잉크 Lot"].astype(str).isin(pick)]
+
+        # ---- 차트
+        tooltip_cols = ["입고일:T", "단일색잉크 Lot:N", "점도측정값(cP):Q"]
+        if "제품코드" in df.columns:
+            tooltip_cols.insert(2, "제품코드:N")
+        if "색상군" in df.columns:
+            tooltip_cols.insert(3, "색상군:N")
+        if "사용된 바인더 Lot" in df.columns:
+            tooltip_cols.append("사용된 바인더 Lot:N")
+
+        chart = (
+            alt.Chart(df)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("입고일:T", title="입고일"),
+                y=alt.Y("점도측정값(cP):Q", title="점도(cP)"),
+                color=alt.Color("단일색잉크 Lot:N", title="Lot"),
+                tooltip=tooltip_cols,
+            )
+            .interactive()
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+        st.caption("※ 로트가 많으면 화면이 복잡해집니다. 상단에서 로트를 몇 개만 선택해서 보는 걸 추천합니다.")
+
+else:
+    df = binder_df.copy()
+
+    need_cols = ["제조/입고일", "Lot(자동)", "점도(cP)"]
+    miss = [c for c in need_cols if c not in df.columns]
+    if miss:
+        st.warning(f"바인더 데이터에 필요한 컬럼이 없습니다: {miss}")
+    else:
+        df = df.dropna(subset=["제조/입고일", "Lot(자동)", "점도(cP)"])
+        df["제조/입고일"] = pd.to_datetime(df["제조/입고일"])
+
+        # 필터
+        f1, f2, f3 = st.columns([1.2, 1.2, 2.6])
+        with f1:
+            dmin = df["제조/입고일"].min().date()
+            dmax = df["제조/입고일"].max().date()
+            start = st.date_input("시작일(바인더)", value=max(dmin, dmax - dt.timedelta(days=180)))
+        with f2:
+            end = st.date_input("종료일(바인더)", value=dmax)
+        with f3:
+            lots = sorted(df["Lot(자동)"].astype(str).unique().tolist())
+            pick = st.multiselect("표시할 바인더 Lot(복수 선택)", lots, default=lots[-10:] if len(lots) > 10 else lots)
+
+        df = df[(df["제조/입고일"].dt.date >= start) & (df["제조/입고일"].dt.date <= end)]
+        if pick:
+            df = df[df["Lot(자동)"].astype(str).isin(pick)]
+
+        chart = (
+            alt.Chart(df)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("제조/입고일:T", title="제조/입고일"),
+                y=alt.Y("점도(cP):Q", title="점도(cP)"),
+                color=alt.Color("Lot(자동):N", title="Binder Lot"),
+                tooltip=["제조/입고일:T", "바인더명:N", "Lot(자동):N", "점도(cP):Q", "판정:N"],
+            )
+            .interactive()
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+
+    
     with left:
         st.subheader("단일색 점도 평균 (색상군별)")
         if "색상군" in single_df.columns and "점도측정값(cP)" in single_df.columns:
