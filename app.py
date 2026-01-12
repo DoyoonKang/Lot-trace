@@ -1,4 +1,21 @@
 
+import streamlit as st
+import pandas as pd
+from urllib.parse import quote
+
+st.set_page_config(
+    page_title="액상 잉크 Lot 추적 관리",
+    layout="wide",
+)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def read_gsheet_csv(sheet_id: str, sheet_name: str) -> pd.DataFrame:
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote(sheet_name)}"
+    return pd.read_csv(url)
+
+
+
+
 import re
 from io import BytesIO
 from pathlib import Path
@@ -292,33 +309,21 @@ if "제조/입고일" in binder_df.columns:
 if "입고일" in single_df.columns:
     single_df["입고일"] = single_df["입고일"].apply(normalize_date)
 
-tab_search, tab_input, tab_dash, tab_binder_io = st.tabs(["🔎 빠른검색", "✍️ 신규입력", "📊 대시보드", "📦 바인더 입출고"])
 
+tab_search, tab_input, tab_dash, tab_binder = st.tabs(["🔎 빠른검색", "✍️ 신규입력", "📊 대시보드", "📦 바인더 입출고"])
 
-with tab_binder_io:
-    st.subheader("바인더 입출고 (Google Sheets 자동 반영)")
+with tab_binder:
+    SHEET_ID = "진짜_스프레드시트_ID로_교체"
 
-    SHEET_ID = "액상잉크 바인더 입출고 대장"  
+    df_hema = read_gsheet_csv(SHEET_ID, "HEMA 바인더 입출고 관리대장")
+    df_sil  = read_gsheet_csv(SHEET_ID, "Silicon바인더 입출고 관리대장")
 
-    try:
-        df_hema = read_gsheet_csv(SHEET_ID, "HEMA 바인더 입출고 관리대장")
-        df_sil  = read_gsheet_csv(SHEET_ID, "Silicon바인더 입출고 관리대장")
-    except Exception as e:
-        st.error("구글시트에서 데이터를 못 불러왔어요. 시트 공유/웹게시/시트명/ID를 확인하세요.")
-        st.exception(e)  # 에러 원인 화면에 표시
-        st.stop()
+    st.subheader("HEMA 바인더 입출고")
+    st.dataframe(df_hema, use_container_width=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("### HEMA")
-        st.dataframe(df_hema, use_container_width=True)
-    with c2:
-        st.markdown("### Silicon")
-        st.dataframe(df_sil, use_container_width=True)
+    st.subheader("Silicon 바인더 입출고")
+    st.dataframe(df_sil, use_container_width=True)
 
-    if st.button("지금 최신값으로 다시 불러오기"):
-        st.cache_data.clear()
-        st.rerun()
 
 
 # =========================
