@@ -10,6 +10,14 @@ from openpyxl import load_workbook
 
 import streamlit as st
 
+import pandas as pd
+from urllib.parse import quote
+
+def read_gsheet_csv(sheet_id: str, sheet_name: str) -> pd.DataFrame:
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote(sheet_name)}"
+    return pd.read_csv(url)
+
+
 st.set_page_config(
     page_title="액상잉크 Lot 추적 대시보드",  #액상잉크 Lot 추적 대시보드
     page_icon="🧪",
@@ -237,6 +245,18 @@ def df_quick_filter(df: pd.DataFrame, text: str, cols: list[str]):
             continue
         mask = mask | df[c].astype(str).str.contains(t, case=False, na=False)
     return df[mask]
+
+SHEET_ID = "바인더 입출고 관리대"
+
+df_hema = read_gsheet_csv(SHEET_ID, "HEMA 바인더 입출고 관리대장")
+df_sil  = read_gsheet_csv(SHEET_ID, "Silicon바인더 입출고 관리대장")
+
+st.subheader("HEMA 바인더 입출고")
+st.dataframe(df_hema, use_container_width=True)
+
+st.subheader("Silicon 바인더 입출고")
+st.dataframe(df_sil, use_container_width=True)
+
 
 
 # =========================
