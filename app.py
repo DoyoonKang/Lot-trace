@@ -263,9 +263,6 @@ def ensure_sheet(xlsx_path: str, sheet_name: str, headers: list[str]):
 
 
 def ensure_return_sheet_schema(xlsx_path: str):
-    """
-    반품로그 시트가 이미 있고, 예전 헤더가 '수량(통)'이면 '반품수량(kg)'로 교체
-    """
     ensure_sheet(xlsx_path, SHEET_BINDER_RETURN, BINDER_RETURN_HEADERS)
 
     wb = load_workbook(xlsx_path)
@@ -355,11 +352,55 @@ def try_sort_by_date_desc(df: pd.DataFrame) -> pd.DataFrame:
     return dd
 
 
+def compute_delta_e_column(single_df: pd.DataFrame, base_lab: pd.DataFrame) -> pd.Series:
+    """
+    ΔE76 컬럼을 최대한 계산해서 반환합니다.
+    - 착색력_L*/a*/b* + 기준LAB(제품코드 매칭)이 있으면 계산
+    - 없으면 비고에서 [ΔE76=...] 패턴을 찾아 숫자만 추출
+    """
+    # base lookup
+    base_map = {}
+    if base_lab is not None and not base_lab.empty and "제품코드" in base_lab.columns:
+        for _, r in base_lab.dropna(subset=["제품코드"]).iterrows():
+            try:
+                base_map[str(r["제품코드"]).strip()] = (
+                    float(r["기준_L*"]), float(r["기준_a*"]), float(r["기준_b*"])
+                )
+            except Exception:
+                continue
+
+    def _row_de(r):
+        # 1) compute by LAB columns
+        try:
+            pc = str(r.get("제품코드", "")).strip()
+            if pc and pc in base_map:
+                L = r.get("착색력_L*", None)
+                a = r.get("착색력_a*", None)
+                b = r.get("착색력_b*", None)
+                if pd.notna(L) and pd.notna(a) and pd.notna(b):
+                    return delta_e76((float(L), float(a), float(b)), base_map[pc])
+        except Exception:
+            pass
+
+        # 2) parse from note
+        try:
+            note = str(r.get("비고", ""))
+            m = re.search(r"ΔE76\s*=\s*([0-9]+(?:\.[0-9]+)?)", note)
+            if m:
+                return float(m.group(1))
+        except Exception:
+            pass
+
+        return None
+
+    return single_df.apply(_row_de, axis=1)
+
+
 # =========================
 # UI Header
 # =========================
 st.title("액상 잉크 Lot 추적 관리 대시보드")
-st.caption("✅ 빠른 검색 + ✅ 잉크 입고(엑셀 누적) + ✅ 대시보드(단일색 평균/추이) + ✅ 바인더 입출고(구글시트 자동 반영) + ✅ 반품(업체 반환) kg 입력")
+st.caption("✅ 빠른 검색 + ✅ 잉크 입고(엑셀 누적) + ✅ 대시보드(표+평균점도 점그래프/추이) + ✅ 바인더 입출고(구글시트 자동 반영) + ✅ 반품(업체 반환) kg 입력")
 
 
 # =========================
@@ -385,7 +426,6 @@ if not Path(xlsx_path).exists():
     st.error(f"엑셀 파일을 찾을 수 없습니다: {xlsx_path}")
     st.stop()
 
-# ✅ 반품로그 스키마 보정(kg)
 ensure_return_sheet_schema(xlsx_path)
 
 data = load_data(xlsx_path)
@@ -414,7 +454,7 @@ tab_dash, tab_ink_in, tab_binder, tab_search = st.tabs(
 
 
 # =========================
-# Dashboard (그래프는 여기만)
+# Dashboard (그래프/표는 여기만)
 # =========================
 with tab_dash:
     b_total = len(binder_df)
@@ -430,23 +470,108 @@ with tab_dash:
 
     st.divider()
 
-    st.subheader("1) 단일색 평균 점도 (색상군별)")
-    if "색상군" in single_df.columns and "점도측정값(cP)" in single_df.columns:
-        chart_df = single_df[["색상군", "점도측정값(cP)"]].dropna()
-        st.bar_chart(chart_df.groupby("색상군")["점도측정값(cP)"].mean())
+    # =========================================================
+    # 1) 단일색 표(엑셀처럼) + 색상군별 평균 점도(점 + 라벨)
+    # =========================================================
+    st.subheader("1) 단일색 현황 (엑셀 형태) + 색상군별 평균 점도")
+
+    needed = ["입고일", "색상군", "제품코드", "사용된 바인더 Lot", "점도측정값(cP)"]
+    miss = [c for c in needed if c not in single_df.columns]
+    if miss:
+        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss}")
     else:
-        st.info("단일색 데이터에 '색상군' 또는 '점도측정값(cP)' 컬럼이 없습니다.")
+        # ΔE76 계산(가능한 범위에서)
+        df_table = single_df.copy()
+        df_table["ΔE76"] = compute_delta_e_column(df_table, base_lab)
+
+        # 표시용 컬럼명(입고일 -> 제조일자)
+        display = pd.DataFrame({
+            "제조일자": df_table["입고일"],
+            "색상군": df_table["색상군"],
+            "제품코드": df_table["제품코드"],
+            "사용된바인더": df_table["사용된 바인더 Lot"],
+            "점도(cP)": df_table["점도측정값(cP)"],
+            "색차값(ΔE76)": df_table["ΔE76"],
+        })
+
+        # 필터(가볍게: 기간/색상군/제품코드)
+        f1, f2, f3 = st.columns([1.3, 1.7, 2.0])
+        with f1:
+            dmin = pd.to_datetime(display["제조일자"], errors="coerce").min()
+            dmax = pd.to_datetime(display["제조일자"], errors="coerce").max()
+            if pd.isna(dmin) or pd.isna(dmax):
+                start = dt.date.today() - dt.timedelta(days=90)
+                end = dt.date.today()
+            else:
+                start = st.date_input("시작일", value=max(dmin.date(), dmax.date() - dt.timedelta(days=90)), key="dash_tbl_start")
+                end = st.date_input("종료일", value=dmax.date(), key="dash_tbl_end")
+        with f2:
+            cg_list = sorted(display["색상군"].dropna().astype(str).unique().tolist())
+            cg_pick = st.multiselect("색상군", cg_list, default=[], key="dash_tbl_cg")
+        with f3:
+            pc_list = sorted(display["제품코드"].dropna().astype(str).unique().tolist())
+            pc_pick = st.multiselect("제품코드", pc_list, default=[], key="dash_tbl_pc")
+
+        # 적용
+        dcol = pd.to_datetime(display["제조일자"], errors="coerce")
+        mask = (dcol.dt.date >= start) & (dcol.dt.date <= end)
+        if cg_pick:
+            mask = mask & (display["색상군"].astype(str).isin(cg_pick))
+        if pc_pick:
+            mask = mask & (display["제품코드"].astype(str).isin(pc_pick))
+
+        view = display.loc[mask].copy()
+        view["제조일자"] = pd.to_datetime(view["제조일자"], errors="coerce")
+        view = view.sort_values(by="제조일자", ascending=False, na_position="last")
+        view["제조일자"] = view["제조일자"].dt.date
+
+        st.dataframe(view, use_container_width=True, height=340)
+
+        # ---- 평균 점도(점 + 라벨)
+        st.markdown("##### 색상군별 평균 점도 (점 + 평균값 표시)")
+        mean_src = view.dropna(subset=["색상군", "점도(cP)"]).copy()
+        if mean_src.empty:
+            st.info("현재 필터 조건에서 평균 점도를 계산할 데이터가 없습니다.")
+        else:
+            mean_df = (
+                mean_src.groupby("색상군", as_index=False)["점도(cP)"]
+                .mean()
+                .rename(columns={"점도(cP)": "평균점도"})
+            )
+
+            # 색상군 정렬(알파벳)
+            mean_df["색상군"] = mean_df["색상군"].astype(str)
+            mean_df = mean_df.sort_values("색상군")
+
+            base = alt.Chart(mean_df).encode(
+                x=alt.X("색상군:N", sort=mean_df["색상군"].tolist(), title="색상군"),
+                y=alt.Y("평균점도:Q", title="평균 점도(cP)"),
+                tooltip=[
+                    alt.Tooltip("색상군:N"),
+                    alt.Tooltip("평균점도:Q", format=",.1f"),
+                ],
+            )
+
+            points = base.mark_point(size=120)
+            labels = base.mark_text(align="left", dx=8, dy=-6).encode(
+                text=alt.Text("평균점도:Q", format=",.0f")
+            )
+
+            st.altair_chart((points + labels).interactive(), use_container_width=True)
 
     st.divider()
 
+    # =========================
+    # 2) 단일색 점도 변화 추이 (Lot별)
+    # =========================
     st.subheader("2) 단일색 점도 변화 추이 (Lot별)")
     st.caption("선택한 Lot별로 '입고일' 기준으로 선으로 연결해 추이를 확인합니다.")
 
     df = single_df.copy()
     need_cols = ["입고일", "단일색잉크 Lot", "점도측정값(cP)"]
-    miss = [c for c in need_cols if c not in df.columns]
-    if miss:
-        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss}")
+    miss2 = [c for c in need_cols if c not in df.columns]
+    if miss2:
+        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss2}")
     else:
         df = df.dropna(subset=need_cols).copy()
         df["입고일"] = pd.to_datetime(df["입고일"])
@@ -456,13 +581,13 @@ with tab_dash:
         with f1:
             dmin = df["입고일"].min().date()
             dmax = df["입고일"].max().date()
-            start = st.date_input("시작일", value=max(dmin, dmax - dt.timedelta(days=90)), key="trend_start")
+            start = st.date_input("시작일(추이)", value=max(dmin, dmax - dt.timedelta(days=90)), key="trend_start")
         with f2:
-            end = st.date_input("종료일", value=dmax, key="trend_end")
+            end = st.date_input("종료일(추이)", value=dmax, key="trend_end")
         with f3:
-            cg = st.multiselect("색상군", sorted(df["색상군"].dropna().unique().tolist()) if "색상군" in df.columns else [], key="trend_cg")
+            cg = st.multiselect("색상군(추이)", sorted(df["색상군"].dropna().unique().tolist()) if "색상군" in df.columns else [], key="trend_cg")
         with f4:
-            pc = st.multiselect("제품코드", sorted(df["제품코드"].dropna().unique().tolist()) if "제품코드" in df.columns else [], key="trend_pc")
+            pc = st.multiselect("제품코드(추이)", sorted(df["제품코드"].dropna().unique().tolist()) if "제품코드" in df.columns else [], key="trend_pc")
 
         if start > end:
             start, end = end, start
@@ -508,7 +633,7 @@ with tab_dash:
 
 
 # =========================
-# Ink In (기존 신규입력 -> 잉크 입고 / 바인더 입력 제거)
+# Ink In (단일색 입력)
 # =========================
 with tab_ink_in:
     st.info("이 탭은 **단일색 잉크 입고 데이터**를 엑셀에 누적 저장합니다.")
@@ -606,7 +731,7 @@ with tab_ink_in:
 
 
 # =========================
-# Binder IO (반품 입력 + 바인더 입력을 최상단에)
+# Binder IO (반품 입력 + 바인더 입력)
 # =========================
 with tab_binder:
     st.subheader("바인더 반품(업체 반환) 입력 (kg 단위)")
@@ -855,18 +980,6 @@ with tab_binder:
                 st.rerun()
             except Exception as e:
                 st.error(f"저장 실패: {e}")
-
-    st.divider()
-
-    st.subheader("반품 로그(최신순)")
-    if binder_return_df is not None and not binder_return_df.empty:
-        rr = binder_return_df.copy()
-        if "반품일" in rr.columns:
-            rr["반품일"] = pd.to_datetime(rr["반품일"], errors="coerce")
-            rr = rr.sort_values(by="반품일", ascending=False, na_position="last")
-        st.dataframe(rr, use_container_width=True)
-    else:
-        st.info("아직 반품 로그가 없습니다.")
 
     st.divider()
 
