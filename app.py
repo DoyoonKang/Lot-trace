@@ -221,6 +221,22 @@ def append_row_to_sheet(xlsx_path: str, sheet_name: str, row: dict):
     values = [row.get(h, None) for h in headers]
     ws.append(values)
     wb.save(xlsx_path)
+    def append_rows_to_sheet(xlsx_path: str, sheet_name: str, rows: list[dict]):
+    """
+    여러 행을 한 번에 append (속도/안정성 ↑)
+    """
+    wb = load_workbook(xlsx_path)
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"Sheet not found: {sheet_name}")
+    ws = wb[sheet_name]
+    headers = [c.value for c in ws[1]]
+
+    for row in rows:
+        values = [row.get(h, None) for h in headers]
+        ws.append(values)
+
+    wb.save(xlsx_path)
+
 
 
 def df_quick_filter(df: pd.DataFrame, text: str, cols: list[str]):
@@ -417,19 +433,173 @@ with tab_input:
 
     # ---- Binder form
     with sub_b:
-        binder_names = sorted(spec_binder["바인더명"].dropna().unique().tolist())
-        with st.form("binder_form", clear_on_submit=True):
+    st.subheader("바인더 입력")
+
+    binder_names = sorted(spec_binder["바인더명"].dropna().unique().tolist())
+    input_mode = st.radio(
+        "입력 방식",
+        ["개별 입력(기존)", "일괄 입력(여러 통 한 번에)"],
+        horizontal=True,
+        key="binder_input_mode"
+    )
+
+    # =========================
+    # (A) 개별 입력(기존)
+    # =========================
+    if input_mode == "개별 입력(기존)":
+        with st.form("binder_form_single", clear_on_submit=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                mfg_date = st.date_input("제조/입고일", value=dt.date.today())
-                binder_name = st.selectbox("바인더명", binder_names)
+                mfg_date = st.date_input("제조/입고일", value=dt.date.today(), key="b_single_date")
+                binder_name = st.selectbox("바인더명", binder_names, key="b_single_name")
             with col2:
-                visc = st.number_input("점도(cP)", min_value=0.0, step=1.0, format="%.1f")
-                uv = st.number_input("UV흡광도(선택)", min_value=0.0, step=0.01, format="%.3f")
-                uv_enabled = st.checkbox("UV 값 입력함", value=False)
+                visc = st.number_input("점도(cP)", min_value=0.0, step=1.0, format="%.1f", key="b_single_visc")
+                uv = st.number_input("UV흡광도(선택)", min_value=0.0, step=0.01, format="%.3f", key="b_single_uv")
+                uv_enabled = st.checkbox("UV 값 입력함", value=False, key="b_single_uv_en")
             with col3:
-                note = st.text_input("비고", value="")
+                note = st.text_input("비고", value="", key="b_single_note")
                 submit_b = st.form_submit_button("저장(바인더)")
+
+        if submit_b:
+            visc_lo, visc_hi, uv_hi, _ = get_binder_limits(spec_binder, binder_name)
+            lot = generate_binder_lot(spec_binder, binder_name, mfg_date, binder_df.get("Lot(자동)", pd.Series(dtype=str)))
+
+            judge_v = judge_range(visc, visc_lo, visc_hi)
+            judge_u = judge_range(uv if uv_enabled else None, None, uv_hi)
+            judge = "부적합" if (judge_v == "부적합" or judge_u == "부적합") else "적합"
+
+            row = {
+                "제조/입고일": mfg_date,
+                "바인더명": binder_name,
+                "Lot(자동)": lot,
+                "점도(cP)": float(visc),
+                "UV흡광도(선택)": float(uv) if uv_enabled else None,
+                "판정": judge,
+                "비고": note,
+            }
+            try:
+                append_row_to_sheet(xlsx_path, SHEET_BINDER, row)
+                st.success(f"저장 완료! 바인더 Lot = {lot}")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"저장 실패: {e}")
+
+    # =========================
+    # (B) 일괄 입력(여러 통)
+    # =========================
+    else:
+        st.caption("제조/입고일·바인더명·점도/UV가 비슷한 바인더를 여러 통 한 번에 입력합니다. (예: 8통)")
+
+        col1, col2, col3, col4 = st.columns([1.2, 1.6, 1.2, 2.0])
+        with col1:
+            mfg_date = st.date_input("제조/입고일", value=dt.date.today(), key="b_batch_date")
+        with col2:
+            binder_name = st.selectbox("바인더명", binder_names, key="b_batch_name")
+        with col3:
+            qty = st.number_input("수량(통)", min_value=1, max_value=50, value=8, step=1, key="b_batch_qty")
+        with col4:
+            common_note = st.text_input("공통 비고(선택)", value="", key="b_batch_note")
+
+        colA, colB, colC = st.columns([1.2, 1.2, 2.0])
+        with colA:
+            common_visc = st.number_input("공통 점도(cP)", min_value=0.0, step=1.0, format="%.1f", key="b_batch_visc")
+        with colB:
+            common_uv = st.number_input("공통 UV흡광도(선택)", min_value=0.0, step=0.01, format="%.3f", key="b_batch_uv")
+            uv_enabled = st.checkbox("UV 값 입력함", value=False, key="b_batch_uv_en")
+        with colC:
+            per_drum = st.checkbox("통별 점도/UV 값 다름(표로 수정)", value=False, key="b_batch_per_drum")
+
+        # ---- 통별 값 편집 테이블
+        if per_drum:
+            base_rows = []
+            for i in range(int(qty)):
+                base_rows.append({
+                    "통번호": i + 1,
+                    "점도(cP)": float(common_visc),
+                    "UV흡광도(선택)": float(common_uv) if uv_enabled else None,
+                    "비고": common_note
+                })
+            edit_df = pd.DataFrame(base_rows)
+            edit_df = st.data_editor(edit_df, use_container_width=True, num_rows="fixed", key="b_batch_editor")
+        else:
+            edit_df = None
+
+        # ---- 저장 버튼
+        submit_batch = st.button("일괄 저장(바인더)", type="primary", key="b_batch_submit")
+
+        if submit_batch:
+            # 스펙/룰 가져오기
+            visc_lo, visc_hi, uv_hi, rule = get_binder_limits(spec_binder, binder_name)
+
+            # rule에서 prefix / seq 여부 파싱
+            m = re.match(r"^([A-Za-z0-9]+)\+YYYYMMDD(-##)?$", str(rule).strip()) if rule else None
+            if not m:
+                st.error("Spec_Binder의 Lot부여규칙을 해석할 수 없습니다. (예: PCB+YYYYMMDD-## 형태인지 확인 필요)")
+                st.stop()
+
+            prefix = m.group(1)
+            has_seq = bool(m.group(2))
+            date_str = mfg_date.strftime("%Y%m%d")
+
+            if (not has_seq) and int(qty) > 1:
+                st.error("Lot부여규칙에 순번(-##)이 없어 여러 통을 서로 다른 Lot로 자동 생성할 수 없습니다. (수량 1로 입력해주세요)")
+                st.stop()
+
+            # 시작 seq 계산
+            existing = binder_df.get("Lot(자동)", pd.Series(dtype=str))
+            start_seq = next_seq_for_pattern(existing, prefix, date_str, digits=2, sep="-")
+
+            rows = []
+            preview = []
+
+            for i in range(int(qty)):
+                lot = f"{prefix}{date_str}-{(start_seq + i):02d}" if has_seq else f"{prefix}{date_str}"
+
+                if per_drum and edit_df is not None:
+                    v = float(edit_df.loc[i, "점도(cP)"])
+                    u = edit_df.loc[i, "UV흡광도(선택)"]
+                    u = float(u) if (uv_enabled and pd.notna(u)) else None
+                    n = str(edit_df.loc[i, "비고"]) if pd.notna(edit_df.loc[i, "비고"]) else ""
+                else:
+                    v = float(common_visc)
+                    u = float(common_uv) if uv_enabled else None
+                    n = common_note
+
+                judge_v = judge_range(v, visc_lo, visc_hi)
+                judge_u = judge_range(u, None, uv_hi) if uv_enabled else None
+                judge = "부적합" if (judge_v == "부적합" or judge_u == "부적합") else "적합"
+
+                row = {
+                    "제조/입고일": mfg_date,
+                    "바인더명": binder_name,
+                    "Lot(자동)": lot,
+                    "점도(cP)": v,
+                    "UV흡광도(선택)": u,
+                    "판정": judge,
+                    "비고": n,
+                }
+                rows.append(row)
+
+                preview.append({
+                    "Lot(자동)": lot,
+                    "점도(cP)": v,
+                    "UV흡광도(선택)": u,
+                    "판정": judge,
+                    "비고": n
+                })
+
+            st.write("저장 미리보기")
+            st.dataframe(pd.DataFrame(preview), use_container_width=True)
+
+            try:
+                append_rows_to_sheet(xlsx_path, SHEET_BINDER, rows)
+                st.success(f"일괄 저장 완료! ({qty}통)  Lot: {rows[0]['Lot(자동)']} ~ {rows[-1]['Lot(자동)']}")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"저장 실패: {e}")
+
 
         if submit_b:
             visc_lo, visc_hi, uv_hi, _ = get_binder_limits(spec_binder, binder_name)
