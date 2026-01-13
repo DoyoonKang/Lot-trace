@@ -18,8 +18,21 @@ st.set_page_config(
     layout="wide",
 )
 
+
 # =========================
-# Constants
+# Google Sheets (Public) Reader
+# =========================
+@st.cache_data(ttl=60, show_spinner=False)
+def read_gsheet_csv(sheet_id: str, sheet_name: str) -> pd.DataFrame:
+    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq"
+    r = requests.get(base, params={"tqx": "out:csv", "sheet": sheet_name}, timeout=20)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    return pd.read_csv(StringIO(r.text))
+
+
+# =========================
+# Config
 # =========================
 DEFAULT_XLSX = "액상잉크_Lot추적관리_FINAL.xlsx"
 
@@ -30,19 +43,8 @@ SHEET_SPEC_SINGLE = "Spec_Single_H&S"
 SHEET_BINDER_VISC = "Binder_Visc"
 SHEET_BASE_LAB = "기준LAB"
 
-# ✅ 반품(업체 반환) 로그 시트
-SHEET_BINDER_RETURN = "바인더_반품로그"
-BINDER_RETURN_HEADERS = [
-    "반품일",
-    "바인더구분(HEMA/Silicon)",
-    "바인더명",
-    "Lot(자동)",
-    "반품수량(kg)",
-    "비고",
-]
-
-# ✅ 1통 기준(kg)
-DRUM_KG = 20.0
+# ✅ 업체 반환(반품) 기록용 시트 (없으면 자동 생성)
+SHEET_BINDER_RETURN = "바인더_업체반환"
 
 COLOR_CODE = {
     "Black": "B",
@@ -61,25 +63,13 @@ BINDER_SHEET_SIL = "Silicon바인더 입출고 관리대장"
 
 
 # =========================
-# Google Sheets (Public) Reader
-# =========================
-@st.cache_data(ttl=60, show_spinner=False)
-def read_gsheet_csv(sheet_id: str, sheet_name: str) -> pd.DataFrame:
-    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq"
-    r = requests.get(base, params={"tqx": "out:csv", "sheet": sheet_name}, timeout=20)
-    r.raise_for_status()
-    r.encoding = "utf-8"
-    return pd.read_csv(StringIO(r.text))
-
-
-# =========================
 # Helpers
 # =========================
 def _read_excel_from_path(xlsx_path: str) -> dict[str, pd.DataFrame]:
     def read(name: str) -> pd.DataFrame:
         return pd.read_excel(xlsx_path, sheet_name=name)
 
-    data = {
+    return {
         "binder": read(SHEET_BINDER),
         "single": read(SHEET_SINGLE),
         "spec_binder": read(SHEET_SPEC_BINDER),
@@ -87,14 +77,6 @@ def _read_excel_from_path(xlsx_path: str) -> dict[str, pd.DataFrame]:
         "binder_visc": read(SHEET_BINDER_VISC),
         "base_lab": read(SHEET_BASE_LAB),
     }
-
-    # 반품로그는 없을 수 있음
-    try:
-        data["binder_return"] = read(SHEET_BINDER_RETURN)
-    except Exception:
-        data["binder_return"] = pd.DataFrame(columns=BINDER_RETURN_HEADERS)
-
-    return data
 
 
 @st.cache_data(show_spinner=False)
@@ -113,21 +95,27 @@ def normalize_date(x):
         return None
 
 
-def to_date_safe(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return None
-    if isinstance(x, dt.datetime):
-        return x.date()
-    if isinstance(x, dt.date):
-        return x
-    try:
-        return pd.to_datetime(x).date()
-    except Exception:
-        return None
-
-
 def delta_e76(lab1, lab2):
-    return float(((lab1[0]-lab2[0])**2 + (lab1[1]-lab2[1])**2 + (lab1[2]-lab2[2])**2) ** 0.5)
+    return float(((lab1[0] - lab2[0]) ** 2 + (lab1[1] - lab2[1]) ** 2 + (lab1[2] - lab2[2]) ** 2) ** 0.5)
+
+
+def extract_delta_e_from_note(note: str):
+    if note is None or pd.isna(note):
+        return None
+    s = str(note)
+    m = re.search(r"ΔE76\s*=\s*([0-9]+(?:\.[0-9]+)?)", s)
+    if not m:
+        m = re.search(r"ΔE76\s*:\s*([0-9]+(?:\.[0-9]+)?)", s)
+    if not m:
+        m = re.search(r"ΔE76\s*([0-9]+(?:\.[0-9]+)?)", s)
+    if not m:
+        m = re.search(r"\[ΔE76=([0-9]+(?:\.[0-9]+)?)\]", s)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            return None
+    return None
 
 
 def get_binder_limits(spec_binder: pd.DataFrame, binder_name: str):
@@ -138,46 +126,30 @@ def get_binder_limits(spec_binder: pd.DataFrame, binder_name: str):
     visc_lo = float(visc["하한"].dropna().iloc[0]) if len(visc["하한"].dropna()) else None
     visc_hi = float(visc["상한"].dropna().iloc[0]) if len(visc["상한"].dropna()) else None
     uv_hi = float(uv["상한"].dropna().iloc[0]) if len(uv["상한"].dropna()) else None
-    rule = df["Lot부여규칙"].dropna().iloc[0] if "Lot부여규칙" in df.columns and len(df["Lot부여규칙"].dropna()) else None
+    rule = (
+        df["Lot부여규칙"].dropna().iloc[0]
+        if "Lot부여규칙" in df.columns and len(df["Lot부여규칙"].dropna())
+        else None
+    )
     return visc_lo, visc_hi, uv_hi, rule
 
 
-def next_seq_for_pattern(existing_lots: pd.Series, prefix: str, date_str: str, digits: int = 2, sep: str = "-"):
-    lots = existing_lots.dropna().astype(str).tolist()
-    seqs = []
-    for lot in lots:
-        if not lot.startswith(prefix + date_str):
-            continue
-        rest = lot[len(prefix + date_str):]
-        if sep and rest.startswith(sep):
-            rest = rest[len(sep):]
-        m = re.match(r"^(\d+)", rest)
+def parse_binder_rule_prefix(rule: str, binder_name_fallback: str):
+    """
+    Spec_Binder Lot부여규칙 예: PCB+YYYYMMDD-##
+    -> prefix='PCB', has_seq=True
+    rule 해석이 안 되면 binder_name에서 prefix를 만들어 has_seq=True로 처리합니다.
+    """
+    if rule:
+        m = re.match(r"^([A-Za-z0-9]+)\+YYYYMMDD(-##)?$", str(rule).strip())
         if m:
-            try:
-                seqs.append(int(m.group(1)))
-            except Exception:
-                pass
-    return (max(seqs) + 1) if seqs else 1
+            prefix = m.group(1)
+            has_seq = bool(m.group(2))
+            return prefix, has_seq
 
-
-def generate_binder_lot(spec_binder: pd.DataFrame, binder_name: str, mfg_date: dt.date, existing_binder_lots: pd.Series):
-    _, _, _, rule = get_binder_limits(spec_binder, binder_name)
-    if not rule:
-        code = re.sub(r"\W+", "", binder_name)[:6].upper()
-        return f"{code}{mfg_date.strftime('%Y%m%d')}-01"
-
-    m = re.match(r"^([A-Za-z0-9]+)\+YYYYMMDD(-##)?$", str(rule).strip())
-    if not m:
-        code = re.sub(r"\W+", "", binder_name)[:6].upper()
-        return f"{code}{mfg_date.strftime('%Y%m%d')}-01"
-
-    prefix = m.group(1)
-    has_seq = bool(m.group(2))
-    date_str = mfg_date.strftime("%Y%m%d")
-    if has_seq:
-        seq = next_seq_for_pattern(existing_binder_lots, prefix, date_str, digits=2, sep="-")
-        return f"{prefix}{date_str}-{seq:02d}"
-    return f"{prefix}{date_str}"
+    # fallback
+    prefix = re.sub(r"\W+", "", str(binder_name_fallback))[:6].upper()
+    return prefix, True
 
 
 def infer_binder_type_from_lot(spec_binder: pd.DataFrame, binder_lot: str):
@@ -197,6 +169,31 @@ def infer_binder_type_from_lot(spec_binder: pd.DataFrame, binder_lot: str):
             if str(binder_lot).startswith(prefix):
                 return r["바인더명"]
     return None
+
+
+def next_seq_for_pattern(existing_lots: pd.Series, prefix: str, date_str: str, sep: str = "-"):
+    lots = existing_lots.dropna().astype(str).tolist()
+    seqs = []
+    for lot in lots:
+        if not lot.startswith(prefix + date_str):
+            continue
+        rest = lot[len(prefix + date_str):]
+        if sep and rest.startswith(sep):
+            rest = rest[len(sep):]
+        m = re.match(r"^(\d+)", rest)
+        if m:
+            try:
+                seqs.append(int(m.group(1)))
+            except Exception:
+                pass
+    return (max(seqs) + 1) if seqs else 1
+
+
+def generate_binder_lot(prefix: str, mfg_date: dt.date, seq: int | None):
+    date_str = mfg_date.strftime("%Y%m%d")
+    if seq is None:
+        return f"{prefix}{date_str}"
+    return f"{prefix}{date_str}-{seq:02d}"
 
 
 def generate_single_lot(single_df: pd.DataFrame, product_code: str, color_group: str, in_date: dt.date):
@@ -243,39 +240,12 @@ def judge_range(value, lo, hi):
     return "적합"
 
 
-def ensure_sheet(xlsx_path: str, sheet_name: str, headers: list[str]):
+def ensure_sheet_with_headers(xlsx_path: str, sheet_name: str, headers: list[str]):
     wb = load_workbook(xlsx_path)
     if sheet_name not in wb.sheetnames:
         ws = wb.create_sheet(sheet_name)
         ws.append(headers)
         wb.save(xlsx_path)
-        return
-
-    ws = wb[sheet_name]
-    first_row = [c.value for c in ws[1]]
-    if all(v is None for v in first_row):
-        ws.delete_rows(1)
-        ws.append(headers)
-        wb.save(xlsx_path)
-        return
-
-    wb.save(xlsx_path)
-
-
-def ensure_return_sheet_schema(xlsx_path: str):
-    ensure_sheet(xlsx_path, SHEET_BINDER_RETURN, BINDER_RETURN_HEADERS)
-
-    wb = load_workbook(xlsx_path)
-    ws = wb[SHEET_BINDER_RETURN]
-    headers = [c.value for c in ws[1]]
-
-    if "반품수량(kg)" not in headers and "수량(통)" in headers:
-        idx = headers.index("수량(통)") + 1
-        ws.cell(row=1, column=idx).value = "반품수량(kg)"
-        wb.save(xlsx_path)
-        return
-
-    wb.save(xlsx_path)
 
 
 def append_row_to_sheet(xlsx_path: str, sheet_name: str, row: dict):
@@ -290,18 +260,14 @@ def append_row_to_sheet(xlsx_path: str, sheet_name: str, row: dict):
 
 
 def append_rows_to_sheet(xlsx_path: str, sheet_name: str, rows: list[dict]):
-    if not rows:
-        return
     wb = load_workbook(xlsx_path)
     if sheet_name not in wb.sheetnames:
         raise ValueError(f"Sheet not found: {sheet_name}")
     ws = wb[sheet_name]
     headers = [c.value for c in ws[1]]
-
     for row in rows:
         values = [row.get(h, None) for h in headers]
         ws.append(values)
-
     wb.save(xlsx_path)
 
 
@@ -319,88 +285,33 @@ def df_quick_filter(df: pd.DataFrame, text: str, cols: list[str]):
     return df[mask]
 
 
-def _pick_col(df: pd.DataFrame, candidates: list[str]):
+def sort_df_by_any_date_col(df: pd.DataFrame):
+    """
+    구글시트 표를 '최신순'으로 보여주기 위한 범용 정렬:
+    날짜로 보이는 컬럼을 찾아 내림차순 정렬합니다.
+    """
+    if df is None or len(df) == 0:
+        return df
+    candidates = ["일자", "날짜", "입출고일", "입고일", "출고일", "Date", "date"]
+    hit = None
     for c in candidates:
         if c in df.columns:
-            return c
-    return None
-
-
-def _pick_col_contains(df: pd.DataFrame, keywords: list[str]):
-    for col in df.columns:
-        low = str(col).lower()
-        for kw in keywords:
-            if kw.lower() in low:
-                return col
-    return None
-
-
-def try_sort_by_date_desc(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
+            hit = c
+            break
+    if hit is None:
         return df
 
-    date_col = _pick_col(df, ["일자", "날짜", "Date", "date", "입출고일", "입고일", "출고일", "반출일", "사용일"])
-    if date_col is None:
-        date_col = _pick_col_contains(df, ["date", "일자", "날짜"])
-
-    if date_col is None:
-        return df
-
-    dd = df.copy()
-    dd[date_col] = pd.to_datetime(dd[date_col], errors="coerce")
-    dd = dd.sort_values(by=date_col, ascending=False, na_position="last")
-    return dd
-
-
-def compute_delta_e_column(single_df: pd.DataFrame, base_lab: pd.DataFrame) -> pd.Series:
-    """
-    ΔE76 컬럼을 최대한 계산해서 반환합니다.
-    - 착색력_L*/a*/b* + 기준LAB(제품코드 매칭)이 있으면 계산
-    - 없으면 비고에서 [ΔE76=...] 패턴을 찾아 숫자만 추출
-    """
-    # base lookup
-    base_map = {}
-    if base_lab is not None and not base_lab.empty and "제품코드" in base_lab.columns:
-        for _, r in base_lab.dropna(subset=["제품코드"]).iterrows():
-            try:
-                base_map[str(r["제품코드"]).strip()] = (
-                    float(r["기준_L*"]), float(r["기준_a*"]), float(r["기준_b*"])
-                )
-            except Exception:
-                continue
-
-    def _row_de(r):
-        # 1) compute by LAB columns
-        try:
-            pc = str(r.get("제품코드", "")).strip()
-            if pc and pc in base_map:
-                L = r.get("착색력_L*", None)
-                a = r.get("착색력_a*", None)
-                b = r.get("착색력_b*", None)
-                if pd.notna(L) and pd.notna(a) and pd.notna(b):
-                    return delta_e76((float(L), float(a), float(b)), base_map[pc])
-        except Exception:
-            pass
-
-        # 2) parse from note
-        try:
-            note = str(r.get("비고", ""))
-            m = re.search(r"ΔE76\s*=\s*([0-9]+(?:\.[0-9]+)?)", note)
-            if m:
-                return float(m.group(1))
-        except Exception:
-            pass
-
-        return None
-
-    return single_df.apply(_row_de, axis=1)
+    tmp = df.copy()
+    tmp["_sort_date"] = pd.to_datetime(tmp[hit], errors="coerce")
+    tmp = tmp.sort_values("_sort_date", ascending=False).drop(columns=["_sort_date"])
+    return tmp
 
 
 # =========================
 # UI Header
 # =========================
 st.title("액상 잉크 Lot 추적 관리 대시보드")
-st.caption("✅ 빠른 검색 + ✅ 잉크 입고(엑셀 누적) + ✅ 대시보드(표+평균점도 점그래프/추이) + ✅ 바인더 입출고(구글시트 자동 반영) + ✅ 반품(업체 반환) kg 입력")
+st.caption("✅ 대시보드(단일색 표/평균/추이) + ✅ 잉크 입고(단일색 입력) + ✅ 바인더 입출고(입고/업체반환 입력 + 구글시트 조회) + ✅ 빠른 검색")
 
 
 # =========================
@@ -426,23 +337,17 @@ if not Path(xlsx_path).exists():
     st.error(f"엑셀 파일을 찾을 수 없습니다: {xlsx_path}")
     st.stop()
 
-ensure_return_sheet_schema(xlsx_path)
-
 data = load_data(xlsx_path)
 binder_df = data["binder"].copy()
 single_df = data["single"].copy()
 spec_binder = data["spec_binder"].copy()
 spec_single = data["spec_single"].copy()
 base_lab = data["base_lab"].copy()
-binder_return_df = data.get("binder_return", pd.DataFrame(columns=BINDER_RETURN_HEADERS)).copy()
 
 if "제조/입고일" in binder_df.columns:
     binder_df["제조/입고일"] = binder_df["제조/입고일"].apply(normalize_date)
 if "입고일" in single_df.columns:
     single_df["입고일"] = single_df["입고일"].apply(normalize_date)
-
-if "반품수량(kg)" not in binder_return_df.columns and "수량(통)" in binder_return_df.columns:
-    binder_return_df = binder_return_df.rename(columns={"수량(통)": "반품수량(kg)"})
 
 
 # =========================
@@ -454,9 +359,10 @@ tab_dash, tab_ink_in, tab_binder, tab_search = st.tabs(
 
 
 # =========================
-# Dashboard (그래프/표는 여기만)
+# 1) Dashboard (✅ 그래프/표는 여기서만!)
 # =========================
 with tab_dash:
+    # KPI
     b_total = len(binder_df)
     s_total = len(single_df)
     b_ng = int((binder_df.get("판정", pd.Series(dtype=str)) == "부적합").sum()) if "판정" in binder_df.columns else 0
@@ -470,113 +376,91 @@ with tab_dash:
 
     st.divider()
 
-    # =========================================================
-    # 1) 단일색 표(엑셀처럼) + 색상군별 평균 점도(점 + 라벨)
-    # =========================================================
-    st.subheader("1) 단일색 현황 (엑셀 형태) + 색상군별 평균 점도")
+    # -------------------------
+    # 1) 단일색 표(엑셀처럼)
+    # -------------------------
+    st.subheader("1) 단일색 데이터 (엑셀 형태로 한 번에 보기)")
+    df_view = single_df.copy()
 
-    needed = ["입고일", "색상군", "제품코드", "사용된 바인더 Lot", "점도측정값(cP)"]
-    miss = [c for c in needed if c not in single_df.columns]
-    if miss:
-        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss}")
+    # 표 컬럼 구성 (요청: 제조일자/색상군/제품코드/사용된바인더/점도/색차값)
+    # 단일색은 '입고일'을 제조일자처럼 보여드리겠습니다.
+    if "비고" in df_view.columns:
+        df_view["색차값(ΔE76)"] = df_view["비고"].apply(extract_delta_e_from_note)
     else:
-        # ΔE76 계산(가능한 범위에서)
-        df_table = single_df.copy()
-        df_table["ΔE76"] = compute_delta_e_column(df_table, base_lab)
+        df_view["색차값(ΔE76)"] = None
 
-        # 표시용 컬럼명(입고일 -> 제조일자)
-        display = pd.DataFrame({
-            "제조일자": df_table["입고일"],
-            "색상군": df_table["색상군"],
-            "제품코드": df_table["제품코드"],
-            "사용된바인더": df_table["사용된 바인더 Lot"],
-            "점도(cP)": df_table["점도측정값(cP)"],
-            "색차값(ΔE76)": df_table["ΔE76"],
-        })
+    # 표 표시용 컬럼 (있는 것만 자동 선택)
+    col_map = {
+        "입고일": "제조일자",
+        "색상군": "색상군",
+        "제품코드": "제품코드",
+        "사용된 바인더 Lot": "사용된바인더",
+        "점도측정값(cP)": "점도(cP)",
+        "색차값(ΔE76)": "색차값(ΔE76)",
+    }
 
-        # 필터(가볍게: 기간/색상군/제품코드)
-        f1, f2, f3 = st.columns([1.3, 1.7, 2.0])
-        with f1:
-            dmin = pd.to_datetime(display["제조일자"], errors="coerce").min()
-            dmax = pd.to_datetime(display["제조일자"], errors="coerce").max()
-            if pd.isna(dmin) or pd.isna(dmax):
-                start = dt.date.today() - dt.timedelta(days=90)
-                end = dt.date.today()
-            else:
-                start = st.date_input("시작일", value=max(dmin.date(), dmax.date() - dt.timedelta(days=90)), key="dash_tbl_start")
-                end = st.date_input("종료일", value=dmax.date(), key="dash_tbl_end")
-        with f2:
-            cg_list = sorted(display["색상군"].dropna().astype(str).unique().tolist())
-            cg_pick = st.multiselect("색상군", cg_list, default=[], key="dash_tbl_cg")
-        with f3:
-            pc_list = sorted(display["제품코드"].dropna().astype(str).unique().tolist())
-            pc_pick = st.multiselect("제품코드", pc_list, default=[], key="dash_tbl_pc")
+    keep_cols = [c for c in col_map.keys() if c in df_view.columns]
+    df_show = df_view[keep_cols].rename(columns=col_map)
 
-        # 적용
-        dcol = pd.to_datetime(display["제조일자"], errors="coerce")
-        mask = (dcol.dt.date >= start) & (dcol.dt.date <= end)
-        if cg_pick:
-            mask = mask & (display["색상군"].astype(str).isin(cg_pick))
-        if pc_pick:
-            mask = mask & (display["제품코드"].astype(str).isin(pc_pick))
+    if "제조일자" in df_show.columns:
+        df_show["제조일자"] = pd.to_datetime(df_show["제조일자"], errors="coerce")
+        df_show = df_show.sort_values("제조일자", ascending=False)
 
-        view = display.loc[mask].copy()
-        view["제조일자"] = pd.to_datetime(view["제조일자"], errors="coerce")
-        view = view.sort_values(by="제조일자", ascending=False, na_position="last")
-        view["제조일자"] = view["제조일자"].dt.date
-
-        st.dataframe(view, use_container_width=True, height=340)
-
-        # ---- 평균 점도(점 + 라벨)
-        st.markdown("##### 색상군별 평균 점도 (점 + 평균값 표시)")
-        mean_src = view.dropna(subset=["색상군", "점도(cP)"]).copy()
-        if mean_src.empty:
-            st.info("현재 필터 조건에서 평균 점도를 계산할 데이터가 없습니다.")
-        else:
-            mean_df = (
-                mean_src.groupby("색상군", as_index=False)["점도(cP)"]
-                .mean()
-                .rename(columns={"점도(cP)": "평균점도"})
-            )
-
-            # 색상군 정렬(알파벳)
-            mean_df["색상군"] = mean_df["색상군"].astype(str)
-            mean_df = mean_df.sort_values("색상군")
-
-            base = alt.Chart(mean_df).encode(
-                x=alt.X("색상군:N", sort=mean_df["색상군"].tolist(), title="색상군"),
-                y=alt.Y("평균점도:Q", title="평균 점도(cP)"),
-                tooltip=[
-                    alt.Tooltip("색상군:N"),
-                    alt.Tooltip("평균점도:Q", format=",.1f"),
-                ],
-            )
-
-            points = base.mark_point(size=120)
-            labels = base.mark_text(align="left", dx=8, dy=-6).encode(
-                text=alt.Text("평균점도:Q", format=",.0f")
-            )
-
-            st.altair_chart((points + labels).interactive(), use_container_width=True)
+    st.dataframe(df_show, use_container_width=True, height=280)
 
     st.divider()
 
-    # =========================
-    # 2) 단일색 점도 변화 추이 (Lot별)
-    # =========================
+    # -------------------------
+    # 1-2) 색상군별 평균 점도 (점 + 값 라벨)
+    # -------------------------
+    st.subheader("색상군별 평균 점도 (점 + 평균값 표시)")
+
+    if "색상군" in single_df.columns and "점도측정값(cP)" in single_df.columns:
+        mean_df = (
+            single_df[["색상군", "점도측정값(cP)"]]
+            .dropna()
+            .groupby("색상군", as_index=False)["점도측정값(cP)"]
+            .mean()
+            .rename(columns={"점도측정값(cP)": "평균점도"})
+        )
+
+        # 점
+        pts = alt.Chart(mean_df).mark_point(size=200).encode(
+            x=alt.X("색상군:N", title="색상군", sort=sorted(mean_df["색상군"].unique().tolist())),
+            y=alt.Y("평균점도:Q", title="평균 점도(cP)"),
+            tooltip=[alt.Tooltip("색상군:N"), alt.Tooltip("평균점도:Q", format=".1f")],
+        )
+
+        # 값 라벨
+        txt = alt.Chart(mean_df).mark_text(dx=10, dy=-10).encode(
+            x="색상군:N",
+            y="평균점도:Q",
+            text=alt.Text("평균점도:Q", format=".0f"),
+        )
+
+        st.altair_chart((pts + txt).interactive(), use_container_width=True)
+    else:
+        st.info("단일색 데이터에 '색상군' 또는 '점도측정값(cP)' 컬럼이 없습니다.")
+
+    st.divider()
+
+    # -------------------------
+    # 2) 단일색 점도 변화 추이 (Lot별) - 점 크게 + 라벨
+    # -------------------------
     st.subheader("2) 단일색 점도 변화 추이 (Lot별)")
-    st.caption("선택한 Lot별로 '입고일' 기준으로 선으로 연결해 추이를 확인합니다.")
+    st.caption("선택한 Lot별로 입고일 기준으로 선으로 연결해 추이를 확인합니다. (점 크기 확대 + 점도값 표기)")
 
     df = single_df.copy()
     need_cols = ["입고일", "단일색잉크 Lot", "점도측정값(cP)"]
-    miss2 = [c for c in need_cols if c not in df.columns]
-    if miss2:
-        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss2}")
+    miss = [c for c in need_cols if c not in df.columns]
+    if miss:
+        st.warning(f"단일색 데이터에 필요한 컬럼이 없습니다: {miss}")
     else:
         df = df.dropna(subset=need_cols).copy()
-        df["입고일"] = pd.to_datetime(df["입고일"])
-        df = df.sort_values("입고일")
+        df["입고일"] = pd.to_datetime(df["입고일"], errors="coerce")
+        df = df.dropna(subset=["입고일"]).sort_values("입고일")
 
+        # 필터
         f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.6, 2.0])
         with f1:
             dmin = df["입고일"].min().date()
@@ -601,14 +485,13 @@ with tab_dash:
         lot_list = sorted(df["단일색잉크 Lot"].astype(str).unique().tolist())
         default_pick = lot_list[-5:] if len(lot_list) > 5 else lot_list
         pick = st.multiselect("표시할 단일색 Lot(복수 선택)", lot_list, default=default_pick, key="trend_lots")
-
         if pick:
             df = df[df["단일색잉크 Lot"].astype(str).isin(pick)]
 
-        if df.empty:
+        if len(df) == 0:
             st.info("선택한 조건에 해당하는 데이터가 없습니다.")
         else:
-            df = df.sort_values(["단일색잉크 Lot", "입고일"])
+            df = df.sort_values("입고일")
 
             tooltip_cols = ["입고일:T", "단일색잉크 Lot:N", "점도측정값(cP):Q"]
             if "제품코드" in df.columns:
@@ -618,40 +501,41 @@ with tab_dash:
             if "사용된 바인더 Lot" in df.columns:
                 tooltip_cols.append("사용된 바인더 Lot:N")
 
-            # ---- 기존 chart = alt.Chart(df).mark_line(point=True) ... 부분을 아래로 교체 ----
+            base = alt.Chart(df).encode(
+                x=alt.X("입고일:T", title="입고일"),
+                y=alt.Y("점도측정값(cP):Q", title="점도(cP)"),
+                color=alt.Color("단일색잉크 Lot:N", title="Lot"),
+                tooltip=tooltip_cols,
+            )
 
-base = alt.Chart(df).encode(
-    x=alt.X("입고일:T", title="입고일"),
-    y=alt.Y("점도측정값(cP):Q", title="점도(cP)"),
-    color=alt.Color("단일색잉크 Lot:N", title="Lot"),
-    tooltip=tooltip_cols,
-)
+            line = base.mark_line()
 
-# ✅ 선
-line = base.mark_line()
+            # ✅ 점 크게
+            points = base.mark_point(size=220)
 
-# ✅ 점(크기 키움)
-points = base.mark_point(size=160)  # 원하시면 200~260까지 더 키워도 됩니다
+            # ✅ 점 옆에 점도값 표시
+            labels = alt.Chart(df).mark_text(dx=10, dy=-10).encode(
+                x="입고일:T",
+                y="점도측정값(cP):Q",
+                color=alt.Color("단일색잉크 Lot:N", legend=None),
+                text=alt.Text("점도측정값(cP):Q", format=".0f"),
+            )
 
-# ✅ 점 옆 라벨(점도값 표시)
-labels = base.mark_text(
-    align="left",
-    dx=10,     # 점 오른쪽으로
-    dy=-10     # 점 위쪽으로(겹침 방지)
-).encode(
-    text=alt.Text("점도측정값(cP):Q", format=",.0f")
-)
+            st.altair_chart((line + points + labels).interactive(), use_container_width=True)
 
-st.altair_chart((line + points + labels).interactive(), use_container_width=True)
+    st.divider()
 
+    st.subheader("최근 20건(단일색)")
+    show = single_df.sort_values(by="입고일", ascending=False).head(20) if "입고일" in single_df.columns else single_df.head(20)
+    st.dataframe(show, use_container_width=True)
 
 
 # =========================
-# Ink In (단일색 입력)
+# 2) 잉크 입고 (단일색 입력만)
 # =========================
 with tab_ink_in:
-    st.info("이 탭은 **단일색 잉크 입고 데이터**를 엑셀에 누적 저장합니다.")
     st.subheader("단일색 잉크 입력")
+    st.info("이 탭은 **엑셀 파일에 행을 추가(Append)** 해서 데이터가 누적되도록 만들었습니다. (여러 사람이 동시에 쓰면 충돌 가능)")
 
     ink_types = ["HEMA", "Silicone"]
     color_groups = sorted(spec_single["색상군"].dropna().unique().tolist())
@@ -664,20 +548,20 @@ with tab_ink_in:
         col1, col2, col3, col4 = st.columns([1.2, 1.3, 1.5, 2.0])
         with col1:
             in_date = st.date_input("입고일", value=dt.date.today(), key="single_in_date")
-            ink_type = st.selectbox("잉크타입", ink_types, key="single_ink_type")
-            color_group = st.selectbox("색상군", color_groups, key="single_color_group")
+            ink_type = st.selectbox("잉크타입", ink_types)
+            color_group = st.selectbox("색상군", color_groups)
         with col2:
-            product_code = st.selectbox("제품코드", product_codes, key="single_product_code")
-            binder_lot = st.selectbox("사용된 바인더 Lot", binder_lots, key="single_binder_lot")
+            product_code = st.selectbox("제품코드", product_codes)
+            binder_lot = st.selectbox("사용된 바인더 Lot", binder_lots)
         with col3:
-            visc_meas = st.number_input("점도측정값(cP)", min_value=0.0, step=1.0, format="%.1f", key="single_visc")
-            supplier = st.selectbox("바인더제조처", ["내부", "외주"], index=0, key="single_supplier")
+            visc_meas = st.number_input("점도측정값(cP)", min_value=0.0, step=1.0, format="%.1f")
+            supplier = st.selectbox("바인더제조처", ["내부", "외주"], index=0)
         with col4:
-            st.caption("선택: 착색력(L*a*b*) 입력 시 기준LAB이 있으면 ΔE(76)을 자동 계산해 비고에 기록합니다.")
-            L = st.number_input("착색력_L*", value=0.0, step=0.1, format="%.2f", key="single_L")
-            a = st.number_input("착색력_a*", value=0.0, step=0.1, format="%.2f", key="single_a")
-            b = st.number_input("착색력_b*", value=0.0, step=0.1, format="%.2f", key="single_b")
-            lab_enabled = st.checkbox("L*a*b* 입력함", value=False, key="single_lab_en")
+            st.caption("선택: 착색력(L*a*b*) 입력하면, 기준LAB이 있을 경우 ΔE(76)을 자동 계산해서 '비고'에 기록합니다.")
+            L = st.number_input("착색력_L*", value=0.0, step=0.1, format="%.2f")
+            a = st.number_input("착색력_a*", value=0.0, step=0.1, format="%.2f")
+            b = st.number_input("착색력_b*", value=0.0, step=0.1, format="%.2f")
+            lab_enabled = st.checkbox("L*a*b* 입력함", value=False)
 
         note = st.text_input("비고", value="", key="single_note")
         submit_s = st.form_submit_button("저장(단일색)")
@@ -696,7 +580,7 @@ with tab_ink_in:
         if len(spec_hit) == 0:
             lo, hi = None, None
             visc_judge = None
-            st.warning("점도 기준을 Spec_Single_H&S에서 찾지 못했습니다. (색상군/제품코드/바인더타입 조합 확인 필요)")
+            st.warning("점도 기준을 Spec_Single_H&S에서 찾지 못했습니다. (색상군/제품코드/바인더타입 조합 확인)")
         else:
             lo = float(spec_hit["하한"].iloc[0])
             hi = float(spec_hit["상한"].iloc[0])
@@ -745,65 +629,67 @@ with tab_ink_in:
 
 
 # =========================
-# Binder IO (반품 입력 + 바인더 입력)
+# 3) 바인더 입출고 (입력은 이 탭 최상단)
 # =========================
 with tab_binder:
-    st.subheader("바인더 반품(업체 반환) 입력 (kg 단위)")
-    st.caption(f"기준: 1통 = {DRUM_KG:.0f}kg. 예) 20kg 중 10kg 사용 → 10kg 반품 입력")
+    st.subheader("바인더 입출고")
 
-    binder_lots = binder_df.get("Lot(자동)", pd.Series(dtype=str)).dropna().astype(str).tolist()
-    binder_lots = sorted(set(binder_lots), reverse=True)
+    # ---------------------------------
+    # (0) 업체 반환(반품) 입력 (✅ 최상단 / kg 단위)
+    # ---------------------------------
+    st.markdown("### ✅ 업체 반환(반품) 입력 (kg 단위)")
+    ensure_sheet_with_headers(
+        xlsx_path,
+        SHEET_BINDER_RETURN,
+        headers=["반품일자", "바인더명", "관련 Lot(선택)", "반품수량(kg)", "비고"]
+    )
+
+    binder_names = sorted(spec_binder["바인더명"].dropna().unique().tolist())
+    binder_lot_choices = sorted(binder_df.get("Lot(자동)", pd.Series(dtype=str)).dropna().astype(str).unique().tolist(), reverse=True)
 
     with st.form("binder_return_form", clear_on_submit=True):
-        r1, r2, r3 = st.columns([1.2, 1.2, 2.6])
-        with r1:
-            ret_date = st.date_input("반품일", value=dt.date.today(), key="ret_date")
-        with r2:
-            ret_type = st.selectbox("구분", ["HEMA", "Silicon"], key="ret_type")
-        with r3:
-            ret_binder_name = st.text_input("바인더명(선택)", value="", key="ret_name")
-
-        r4, r5, r6 = st.columns([2.0, 1.3, 2.0])
-        with r4:
-            ret_lot = st.selectbox("반품 Lot(선택)", [""] + binder_lots, key="ret_lot")
-        with r5:
-            ret_kg = st.number_input("반품 수량(kg)", min_value=0.0, step=0.1, format="%.1f", value=0.0, key="ret_kg")
-        with r6:
-            drums = (ret_kg / DRUM_KG) if DRUM_KG else 0.0
-            st.markdown(f"**통 환산:** {drums:.2f} 통")
+        c1, c2, c3, c4 = st.columns([1.2, 1.6, 2.0, 1.4])
+        with c1:
+            ret_date = st.date_input("반품일자", value=dt.date.today(), key="ret_date")
+        with c2:
+            ret_name = st.selectbox("바인더명", binder_names, key="ret_name")
+        with c3:
+            ret_lot = st.selectbox("관련 Lot(선택)", ["(선택안함)"] + binder_lot_choices, key="ret_lot")
+        with c4:
+            ret_kg = st.number_input("반품수량(kg)", min_value=0.0, step=0.1, format="%.1f", key="ret_kg")
 
         ret_note = st.text_input("비고", value="", key="ret_note")
-        submit_ret = st.form_submit_button("반품 저장")
+        ret_submit = st.form_submit_button("반품 저장", type="primary")
 
-    if submit_ret:
+    if ret_submit:
         if ret_kg <= 0:
-            st.error("반품 수량(kg)은 0보다 커야 합니다.")
+            st.error("반품수량(kg)은 0보다 커야 합니다.")
         else:
-            ensure_return_sheet_schema(xlsx_path)
             row = {
-                "반품일": ret_date,
-                "바인더구분(HEMA/Silicon)": ret_type,
-                "바인더명": ret_binder_name.strip(),
-                "Lot(자동)": ret_lot.strip(),
+                "반품일자": ret_date,
+                "바인더명": ret_name,
+                "관련 Lot(선택)": "" if ret_lot == "(선택안함)" else ret_lot,
                 "반품수량(kg)": float(ret_kg),
-                "비고": ret_note.strip(),
+                "비고": ret_note,
             }
             try:
                 append_row_to_sheet(xlsx_path, SHEET_BINDER_RETURN, row)
-                st.success("반품 내역 저장 완료!")
+                st.success("반품 저장 완료!")
                 st.cache_data.clear()
                 st.rerun()
             except Exception as e:
-                st.error(f"반품 저장 실패: {e}")
+                st.error(f"저장 실패: {e}")
 
     st.divider()
 
-    st.subheader("바인더 입력 (제조/입고) — 이 탭 최상단에서 입력")
-    binder_names = sorted(spec_binder["바인더명"].dropna().unique().tolist())
+    # ---------------------------------
+    # (1) 바인더 입고 입력 (개별/일괄-여러 날짜)
+    # ---------------------------------
+    st.markdown("### ✅ 바인더 입고 입력 (개별 / 일괄)")
 
     input_mode = st.radio(
         "입력 방식",
-        ["개별 입력", "일괄 입력(날짜/수량/점도 직접 입력)"],
+        ["개별 입력", "일괄 입력(여러 날짜/여러 Lot)"],
         horizontal=True,
         key="binder_input_mode"
     )
@@ -823,8 +709,13 @@ with tab_binder:
                 submit_b = st.form_submit_button("저장(바인더)")
 
         if submit_b:
-            visc_lo, visc_hi, uv_hi, _ = get_binder_limits(spec_binder, binder_name)
-            lot = generate_binder_lot(spec_binder, binder_name, mfg_date, binder_df.get("Lot(자동)", pd.Series(dtype=str)))
+            visc_lo, visc_hi, uv_hi, rule = get_binder_limits(spec_binder, binder_name)
+            prefix, has_seq = parse_binder_rule_prefix(rule, binder_name)
+
+            existing = binder_df.get("Lot(자동)", pd.Series(dtype=str))
+            date_str = mfg_date.strftime("%Y%m%d")
+            seq = next_seq_for_pattern(existing, prefix, date_str, sep="-") if has_seq else None
+            lot = generate_binder_lot(prefix, mfg_date, seq)
 
             judge_v = judge_range(visc, visc_lo, visc_hi)
             judge_u = judge_range(uv if uv_enabled else None, None, uv_hi)
@@ -839,6 +730,7 @@ with tab_binder:
                 "판정": judge,
                 "비고": note,
             }
+
             try:
                 append_row_to_sheet(xlsx_path, SHEET_BINDER, row)
                 st.success(f"저장 완료! 바인더 Lot = {lot}")
@@ -848,148 +740,94 @@ with tab_binder:
                 st.error(f"저장 실패: {e}")
 
     else:
-        st.caption("✅ 날짜별로 필요할 때만 행을 추가하고, 저장 버튼 한 번으로 일괄 저장합니다.")
+        st.caption("날짜별로 여러 Lot가 한 번에 입고되는 경우에 사용합니다. (기간 자동 생성 X / 사용자가 날짜·수량·점도 입력)")
+
         binder_name = st.selectbox("바인더명(공통)", binder_names, key="b_batch_name")
+        visc_lo, visc_hi, uv_hi, rule = get_binder_limits(spec_binder, binder_name)
+        prefix, has_seq = parse_binder_rule_prefix(rule, binder_name)
 
-        st.markdown("#### 새 행 기본값")
-        d1, d2, d3, d4, d5 = st.columns([1.2, 1.1, 1.2, 1.2, 2.3])
-        with d1:
-            default_date = st.date_input("기본 날짜", value=dt.date.today(), key="b_def_date")
-        with d2:
-            default_qty = st.number_input("기본 수량(통)", min_value=1, max_value=200, value=8, step=1, key="b_def_qty")
-        with d3:
-            default_visc = st.number_input("기본 점도(cP)", min_value=0.0, step=1.0, format="%.1f", key="b_def_visc")
-        with d4:
-            default_uv = st.number_input("기본 UV(선택)", min_value=0.0, step=0.01, format="%.3f", key="b_def_uv")
-            default_uv_use = st.checkbox("UV 사용", value=False, key="b_def_uv_use")
-        with d5:
-            default_note = st.text_input("기본 비고", value="", key="b_def_note")
+        uv_enabled = st.checkbox("UV 값도 같이 입력", value=False, key="b_batch_uv_en")
 
-        st.markdown("#### 날짜별 입고 행(직접 입력)")
-        if "b_batch_table" not in st.session_state or st.session_state["b_batch_table"] is None:
-            st.session_state["b_batch_table"] = pd.DataFrame([{
-                "제조/입고일": dt.date.today(),
-                "수량(통)": 8,
-                "점도(cP)": 0.0,
-                "UV흡광도(선택)": None,
-                "비고": ""
-            }])
-
-        cbtn1, cbtn2 = st.columns([1.2, 2.8])
-        with cbtn1:
-            if st.button("행 추가(기본값)", key="b_add_row"):
-                df0 = st.session_state["b_batch_table"].copy()
-                df0.loc[len(df0)] = {
-                    "제조/입고일": default_date,
-                    "수량(통)": int(default_qty),
-                    "점도(cP)": float(default_visc),
-                    "UV흡광도(선택)": float(default_uv) if default_uv_use else None,
-                    "비고": default_note
-                }
-                st.session_state["b_batch_table"] = df0
-                st.rerun()
-        with cbtn2:
-            if st.button("테이블 초기화(1행)", key="b_reset_table"):
-                st.session_state["b_batch_table"] = pd.DataFrame([{
-                    "제조/입고일": dt.date.today(),
-                    "수량(통)": int(default_qty),
-                    "점도(cP)": float(default_visc),
-                    "UV흡광도(선택)": float(default_uv) if default_uv_use else None,
-                    "비고": default_note
-                }])
-                st.rerun()
-
-        date_bundle_df = st.data_editor(
-            st.session_state["b_batch_table"],
+        # ✅ 사용자 입력 테이블: 날짜/수량/점도/UV/비고
+        base_rows = [
+            {"제조/입고일": dt.date.today(), "수량(통)": 8, "점도(cP)": 0.0, "UV흡광도(선택)": 0.0 if uv_enabled else None, "비고": ""}
+        ]
+        editor_df = st.data_editor(
+            pd.DataFrame(base_rows),
             use_container_width=True,
             num_rows="dynamic",
             key="b_batch_editor",
+            column_config={
+                "제조/입고일": st.column_config.DateColumn("제조/입고일"),
+                "수량(통)": st.column_config.NumberColumn("수량(통)", min_value=1, step=1),
+                "점도(cP)": st.column_config.NumberColumn("점도(cP)", min_value=0.0, step=1.0),
+                "UV흡광도(선택)": st.column_config.NumberColumn("UV흡광도(선택)", min_value=0.0, step=0.01),
+                "비고": st.column_config.TextColumn("비고"),
+            }
         )
-        st.session_state["b_batch_table"] = date_bundle_df
 
-        st.divider()
-        submit_batch = st.button("일괄 저장(바인더)", type="primary", key="b_batch_submit")
+        st.caption("※ Lot부여규칙이 -##(순번) 없는 경우, 여러 통을 자동으로 Lot 분리 생성할 수 없습니다.")
+        submit_batch = st.button("일괄 저장(바인더 입고)", type="primary", key="b_batch_submit")
 
         if submit_batch:
-            visc_lo, visc_hi, uv_hi, rule = get_binder_limits(spec_binder, binder_name)
-            m = re.match(r"^([A-Za-z0-9]+)\+YYYYMMDD(-##)?$", str(rule).strip()) if rule else None
-            if not m:
-                st.error("Spec_Binder의 Lot부여규칙을 해석할 수 없습니다. (예: PCB+YYYYMMDD-## 형태인지 확인 필요)")
-                st.stop()
-
-            prefix = m.group(1)
-            has_seq = bool(m.group(2))
-
-            existing = binder_df.get("Lot(자동)", pd.Series(dtype=str)).dropna().astype(str)
-            next_seq_map: dict[str, int] = {}
-            rows_to_write: list[dict] = []
-            preview: list[dict] = []
-
-            src = st.session_state["b_batch_table"].copy()
-            src["제조/입고일"] = src["제조/입고일"].apply(to_date_safe)
-            src = src.dropna(subset=["제조/입고일"]).sort_values(by="제조/입고일")
-
-            if src.empty:
-                st.warning("저장할 데이터가 없습니다. (제조/입고일이 비어있지 않은지 확인해주세요)")
-                st.stop()
-
-            for _, rr in src.iterrows():
-                mfg_date = rr["제조/입고일"]
-                qty = int(rr.get("수량(통)", 1) or 1)
-                qty = max(qty, 1)
-
-                v = rr.get("점도(cP)", None)
-                u = rr.get("UV흡광도(선택)", None)
-                note = rr.get("비고", "")
-
-                date_str = mfg_date.strftime("%Y%m%d")
-
-                if (not has_seq) and qty > 1:
-                    st.error(f"Lot부여규칙에 순번(-##)이 없어 '{mfg_date}' 날짜에서 수량(통)={qty}는 불가합니다. (수량을 1로 입력해주세요)")
+            if not has_seq:
+                # 순번이 없으면 행 1개, 수량 1만 허용
+                if len(editor_df) > 1 or int(editor_df.iloc[0]["수량(통)"]) != 1:
+                    st.error("Lot부여규칙에 순번(-##)이 없어 여러 Lot 자동 생성이 불가합니다. (행 1개 + 수량 1로 입력해주세요)")
                     st.stop()
 
-                if has_seq:
-                    if date_str not in next_seq_map:
-                        next_seq_map[date_str] = next_seq_for_pattern(existing, prefix, date_str, digits=2, sep="-")
-                    start_seq = next_seq_map[date_str]
-                else:
-                    start_seq = 1
+            existing = binder_df.get("Lot(자동)", pd.Series(dtype=str))
+            rows_to_append = []
+            preview = []
+
+            for idx in range(len(editor_df)):
+                row_in = editor_df.iloc[idx].to_dict()
+
+                mfg_date = row_in.get("제조/입고일")
+                if isinstance(mfg_date, pd.Timestamp):
+                    mfg_date = mfg_date.date()
+                if not isinstance(mfg_date, dt.date):
+                    st.error(f"{idx+1}번째 행: 제조/입고일이 올바르지 않습니다.")
+                    st.stop()
+
+                qty = int(row_in.get("수량(통)", 1) or 1)
+                v = float(row_in.get("점도(cP)", 0.0) or 0.0)
+                u = row_in.get("UV흡광도(선택)", None)
+                u = float(u) if (uv_enabled and u is not None and pd.notna(u)) else None
+                note = str(row_in.get("비고", "") or "")
+
+                date_str = mfg_date.strftime("%Y%m%d")
+                start_seq = next_seq_for_pattern(existing, prefix, date_str, sep="-") if has_seq else None
 
                 for i in range(qty):
-                    lot = f"{prefix}{date_str}-{(start_seq + i):02d}" if has_seq else f"{prefix}{date_str}"
+                    seq = (start_seq + i) if start_seq is not None else None
+                    lot = generate_binder_lot(prefix, mfg_date, seq)
 
                     judge_v = judge_range(v, visc_lo, visc_hi)
-                    judge_u = judge_range(u, None, uv_hi) if (u is not None and not pd.isna(u)) else None
+                    judge_u = judge_range(u, None, uv_hi) if uv_enabled else None
                     judge = "부적합" if (judge_v == "부적합" or judge_u == "부적합") else "적합"
 
-                    row = {
+                    row_out = {
                         "제조/입고일": mfg_date,
                         "바인더명": binder_name,
                         "Lot(자동)": lot,
-                        "점도(cP)": float(v) if (v is not None and not pd.isna(v)) else None,
-                        "UV흡광도(선택)": float(u) if (u is not None and not pd.isna(u)) else None,
+                        "점도(cP)": v,
+                        "UV흡광도(선택)": u,
                         "판정": judge,
-                        "비고": str(note) if note is not None else "",
+                        "비고": note,
                     }
-                    rows_to_write.append(row)
-                    preview.append({
-                        "제조/입고일": mfg_date,
-                        "Lot(자동)": lot,
-                        "점도(cP)": row["점도(cP)"],
-                        "UV흡광도(선택)": row["UV흡광도(선택)"],
-                        "판정": judge,
-                        "비고": row["비고"],
-                    })
+                    rows_to_append.append(row_out)
+                    preview.append({"제조/입고일": mfg_date, "Lot(자동)": lot, "점도(cP)": v, "UV": u, "판정": judge})
 
-                if has_seq:
-                    next_seq_map[date_str] = start_seq + qty
+                # existing 업데이트(다음 날짜 처리용)
+                existing = pd.concat([existing, pd.Series([r["Lot(자동)"] for r in rows_to_append], dtype=str)], ignore_index=True)
 
-            st.write("저장 미리보기")
-            st.dataframe(pd.DataFrame(preview), use_container_width=True)
+            st.write("저장 미리보기(일부)")
+            st.dataframe(pd.DataFrame(preview).head(30), use_container_width=True)
 
             try:
-                append_rows_to_sheet(xlsx_path, SHEET_BINDER, rows_to_write)
-                st.success(f"일괄 저장 완료! (총 {len(rows_to_write)}통)")
+                append_rows_to_sheet(xlsx_path, SHEET_BINDER, rows_to_append)
+                st.success(f"일괄 저장 완료! (총 {len(rows_to_append)}건)")
                 st.cache_data.clear()
                 st.rerun()
             except Exception as e:
@@ -997,27 +835,30 @@ with tab_binder:
 
     st.divider()
 
-    st.subheader("바인더 입출고 (Google Sheets 자동 반영)")
-    st.caption("구글 시트를 수정하면, 새로고침 시 최신 값이 반영됩니다. (캐시 60초)")
+    # ---------------------------------
+    # (2) 구글시트 바인더 입출고 조회 (✅ 최신순 정렬)
+    # ---------------------------------
+    st.markdown("### 바인더 입출고 (Google Sheets 자동 반영 / 최신순)")
+    st.caption("구글 시트를 수정하면, 이 화면은 새로고침 시 자동으로 최신 값이 반영됩니다. (캐시 60초)")
 
     try:
         df_hema = read_gsheet_csv(BINDER_SHEET_ID, BINDER_SHEET_HEMA)
         df_sil = read_gsheet_csv(BINDER_SHEET_ID, BINDER_SHEET_SIL)
     except Exception as e:
-        st.error("구글시트에서 데이터를 못 불러왔습니다. (공유/웹게시/시트명/ID 확인 필요)")
+        st.error("구글시트에서 데이터를 못 불러왔습니다. 시트 공유/웹게시/시트명/ID를 확인해주세요.")
         st.exception(e)
         st.stop()
 
-    df_hema_sorted = try_sort_by_date_desc(df_hema)
-    df_sil_sorted = try_sort_by_date_desc(df_sil)
+    df_hema = sort_df_by_any_date_col(df_hema)
+    df_sil = sort_df_by_any_date_col(df_sil)
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("### HEMA (최신순)")
-        st.dataframe(df_hema_sorted, use_container_width=True)
+        st.markdown("#### HEMA (최신순)")
+        st.dataframe(df_hema, use_container_width=True)
     with c2:
-        st.markdown("### Silicon (최신순)")
-        st.dataframe(df_sil_sorted, use_container_width=True)
+        st.markdown("#### Silicon (최신순)")
+        st.dataframe(df_sil, use_container_width=True)
 
     if st.button("지금 최신값으로 다시 불러오기", key="binder_refresh"):
         st.cache_data.clear()
@@ -1025,17 +866,17 @@ with tab_binder:
 
 
 # =========================
-# Search
+# 4) Search
 # =========================
 with tab_search:
     c1, c2, c3 = st.columns([2, 2, 3])
     with c1:
-        mode = st.selectbox("검색 종류", ["바인더 Lot", "단일색 잉크 Lot", "제품코드", "색상군", "기간(입고일)"], key="search_mode")
+        mode = st.selectbox("검색 종류", ["바인더 Lot", "단일색 잉크 Lot", "제품코드", "색상군", "기간(입고일)"])
     with c2:
-        q = st.text_input("검색어", placeholder="예: PCB20250112-01 / PLB25041501 / PL-835-1 ...", key="search_q")
+        q = st.text_input("검색어", placeholder="예: PCB20250112-01 / PLB25041501 / PL-835-1 ...")
     with c3:
         st.write("")
-        st.caption("💡 바인더 Lot로 검색하면: 바인더 정보 + 해당 바인더를 사용한 단일색 잉크 목록을 같이 보여드립니다.")
+        st.caption("💡 바인더 Lot로 검색하면: 바인더 정보 + 해당 바인더를 사용한 단일색 잉크 목록을 같이 보여줍니다.")
 
     if mode == "기간(입고일)":
         d1, d2 = st.columns(2)
