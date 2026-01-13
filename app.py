@@ -618,18 +618,32 @@ with tab_dash:
             if "사용된 바인더 Lot" in df.columns:
                 tooltip_cols.append("사용된 바인더 Lot:N")
 
-            chart = (
-                alt.Chart(df)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("입고일:T", title="입고일"),
-                    y=alt.Y("점도측정값(cP):Q", title="점도(cP)"),
-                    color=alt.Color("단일색잉크 Lot:N", title="Lot"),
-                    tooltip=tooltip_cols,
-                )
-                .interactive()
-            )
-            st.altair_chart(chart, use_container_width=True)
+            # ---- 기존 chart = alt.Chart(df).mark_line(point=True) ... 부분을 아래로 교체 ----
+
+base = alt.Chart(df).encode(
+    x=alt.X("입고일:T", title="입고일"),
+    y=alt.Y("점도측정값(cP):Q", title="점도(cP)"),
+    color=alt.Color("단일색잉크 Lot:N", title="Lot"),
+    tooltip=tooltip_cols,
+)
+
+# ✅ 선
+line = base.mark_line()
+
+# ✅ 점(크기 키움)
+points = base.mark_point(size=160)  # 원하시면 200~260까지 더 키워도 됩니다
+
+# ✅ 점 옆 라벨(점도값 표시)
+labels = base.mark_text(
+    align="left",
+    dx=10,     # 점 오른쪽으로
+    dy=-10     # 점 위쪽으로(겹침 방지)
+).encode(
+    text=alt.Text("점도측정값(cP):Q", format=",.0f")
+)
+
+st.altair_chart((line + points + labels).interactive(), use_container_width=True)
+
 
 
 # =========================
