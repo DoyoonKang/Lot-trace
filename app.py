@@ -553,87 +553,9 @@ with tab_dash:
 
     st.divider()
 
-    # 2) Lot별 추이
-    st.subheader("2) 단일색 점도 변화 추이 (Lot별)")
-    st.caption("선택한 Lot별로 입고일 기준 점도 변화를 확인합니다. (점/라벨 크게 표시)")
-
-    if not all([c_s_date, c_s_lot, c_s_visc]):
-        st.warning("단일색 시트에서 추이 그래프에 필요한 컬럼(입고일/단일색잉크 Lot/점도측정값)을 찾지 못했습니다.")
-    else:
-        df = single_df.copy()
-        df[c_s_date] = pd.to_datetime(df[c_s_date], errors="coerce")
-        df["_점도"] = pd.to_numeric(df[c_s_visc].astype(str).str.replace(",", "", regex=False), errors="coerce")
-        df["_Lot"] = df[c_s_lot].astype(str).replace("nan", "").replace("None", "").str.strip()
-        df = df.dropna(subset=[c_s_date, "_점도"])
-        df = df[df["_Lot"] != ""]
-
-        if len(df) == 0:
-            st.info("입고일/점도/Lot 값이 비어있어 추이 그래프를 표시할 수 없습니다.")
-        else:
-            dmin, dmax = safe_date_bounds(df[c_s_date])
-
-            f1, f2, f3, f4, f5 = st.columns([1.2, 1.2, 1.6, 2.0, 1.0])
-            with f1:
-                start = st.date_input("시작일(추이)", value=max(dmin, dmax - dt.timedelta(days=90)), key="trend_start")
-            with f2:
-                end = st.date_input("종료일(추이)", value=dmax, key="trend_end")
-            with f3:
-                cg_opts = sorted([x for x in df[c_s_cg].dropna().unique().tolist()]) if c_s_cg else []
-                cg = st.multiselect("색상군(추이)", cg_opts, key="trend_cg")
-            with f4:
-                pc_opts = sorted([x for x in df[c_s_pc].dropna().unique().tolist()]) if c_s_pc else []
-                pc = st.multiselect("제품코드(추이)", pc_opts, key="trend_pc")
-            with f5:
-                show_labels = st.checkbox("라벨 표시", value=True, key="trend_labels")
-
-            if start > end:
-                start, end = end, start
-            df = df[(df[c_s_date].dt.date >= start) & (df[c_s_date].dt.date <= end)]
-            if cg and c_s_cg:
-                df = df[df[c_s_cg].isin(cg)]
-            if pc and c_s_pc:
-                df = df[df[c_s_pc].isin(pc)]
-
-            lot_list = sorted(df["_Lot"].dropna().unique().tolist())
-            default_pick = lot_list[-5:] if len(lot_list) > 5 else lot_list
-            pick = st.multiselect("표시할 단일색 Lot(복수 선택)", lot_list, default=default_pick, key="trend_lots")
-            if pick:
-                df = df[df["_Lot"].isin(pick)]
-
-            if len(df) == 0:
-                st.info("선택한 조건에 해당하는 데이터가 없습니다.")
-            else:
-                df = df.sort_values(c_s_date)
-                df["_표시"] = df["_점도"].round(0).astype("Int64").astype(str)
-
-                tooltip = ["입고일:T", "_Lot:N", "_점도:Q"]
-                if c_s_pc:
-                    tooltip.insert(2, f"{c_s_pc}:N")
-                if c_s_cg:
-                    tooltip.insert(3, f"{c_s_cg}:N")
-                if c_s_blot:
-                    tooltip.append(f"{c_s_blot}:N")
-
-                base = alt.Chart(df).encode(
-                    x=alt.X(f"{c_s_date}:T", title="입고일"),
-                    y=alt.Y("_점도:Q", title="점도(cP)"),
-                    tooltip=tooltip,
-                )
-                line = base.mark_line()
-                points = base.mark_point(size=260).encode(color=alt.Color("_Lot:N", title="Lot"))
-                if show_labels:
-                    labels = base.mark_text(dy=-12).encode(text="_표시:N", color=alt.Color("_Lot:N", legend=None))
-                    chart = (line + points + labels).interactive()
-                else:
-                    chart = (line + points).interactive()
-
-                st.altair_chart(chart, use_container_width=True)
-
-    st.divider()
-
     # 3) 제품(단일색)별 트렌드 + 스펙선 + 스펙 수정
-    st.subheader("3) 제품별 점도 트렌드 (스펙 상/하한 빨간선 + 대시보드에서 스펙 수정)")
-    st.caption("예: GREEN(PL-435)처럼 제품코드 기준으로 점도 추이를 보면서, 스펙 상/하한을 바로 조정할 수 있습니다.")
+    st.subheader("3) 제품별 점도 트랜드")
+    st.caption("제품코드 기준 점도 추이 + 스펙 상/하한(빨간선) 표시, 그리고 스펙 값은 대시보드에서 바로 수정 가능합니다.")
 
     if not all([c_s_date, c_s_visc, c_s_pc]):
         st.info("제품별 트렌드를 만들기 위해서는 단일색 시트에 입고일/점도측정값/제품코드 컬럼이 필요합니다.")
