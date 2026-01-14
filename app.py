@@ -1307,12 +1307,229 @@ with tab_binder:
         st.markdown("### Silicone (최신순)")
         st.dataframe(df_sil, use_container_width=True, height=420)
 
-    if st.button("지금 최신값으로 다시 불러오기", key="binder_refresh"):
-        st.cache_data.clear()
-        st.rerun()
 
-# =========================================================
-# Search (placeholder)
-# =========================================================
+# =========================
+# Search (빠른검색)
+# =========================
 with tab_search:
-    st.info("빠른검색은 필요하시면 조건(기간/제품/색상군/바인더Lot/판정)까지 확장해드릴게요.")
+    st.subheader("빠른검색")
+    st.caption("바인더 Lot/단일색 Lot/제품코드/색상군/기간으로 빠르게 조회합니다. (부분검색 기본)")
+
+    def _contains(df: pd.DataFrame, q: str, cols: list[str], exact: bool = False) -> pd.DataFrame:
+        if df is None or len(df) == 0:
+            return df
+        q = (q or "").strip()
+        if not q:
+            return df
+        mask = pd.Series(False, index=df.index)
+        for c in cols:
+            if c not in df.columns:
+                continue
+            s = df[c].astype(str)
+            if exact:
+                mask = mask | (s.str.strip() == q)
+            else:
+                mask = mask | s.str.contains(q, case=False, na=False)
+        return df[mask]
+
+    def _sort_by_date(df: pd.DataFrame, col: str) -> pd.DataFrame:
+        if df is None or len(df) == 0 or col not in df.columns:
+            return df
+        out = df.copy()
+        out["__d"] = pd.to_datetime(out[col], errors="coerce")
+        out = out.sort_values(by="__d", ascending=False).drop(columns=["__d"])
+        return out
+
+    # ---- UI
+    c1, c2, c3 = st.columns([1.6, 2.2, 1.2])
+    with c1:
+        mode = st.selectbox(
+            "검색 종류",
+            ["바인더 Lot", "단일색 잉크 Lot", "제품코드", "색상군", "기간(입고일)", "반품(업체반환)"],
+            index=0,
+        )
+    with c2:
+        q = st.text_input("검색어", placeholder="예: PCB20251218-01 / PLB25112601 / PL-835-1 ...")
+    with c3:
+        exact = st.toggle("완전일치", value=False, help="켜면 정확히 같은 값만 조회합니다.")
+
+    st.divider()
+
+    # ---- Data sources
+    # binder_view, single_view는 위에서 이미 생성됨
+    bv = binder_view.copy()
+    sv = single_view.copy()
+
+    # 보기 좋은 컬럼 셋
+    binder_cols = [c for c in ["제조/입고일", "바인더명", "Lot(자동)", "점도(cP)", "UV흡광도(선택)", "판정", "비고"] if c in bv.columns]
+    single_cols = [
+        c for c in [
+            "입고일", "색상군", "제품코드", "_lot_calc", "사용된 바인더 Lot", "_binder_type_calc",
+            "점도측정값(cP)", "점도하한", "점도상한", "점도판정", "비고", "_de76_calc"
+        ]
+        if c in sv.columns
+    ]
+
+    # 라벨용 rename (화면에서만)
+    rename_single = {
+        "_lot_calc": "단일색잉크 Lot",
+        "_binder_type_calc": "BinderType(자동)",
+        "_de76_calc": "색차(ΔE76)",
+    }
+
+    if mode == "기간(입고일)":
+        if "입고일" not in sv.columns:
+            st.warning("단일색 데이터에 '입고일' 컬럼이 없어 기간 검색을 할 수 없습니다.")
+        else:
+            dmin, dmax = safe_date_bounds(pd.to_datetime(sv["입고일"], errors="coerce"))
+            d1, d2, d3 = st.columns([1.2, 1.2, 1.6])
+            with d1:
+                start = st.date_input("시작일", value=max(dmin, dmax - dt.timedelta(days=30)), key="qs_start")
+            with d2:
+                end = st.date_input("종료일", value=dmax, key="qs_end")
+            with d3:
+                only_ng = st.checkbox("부적합만", value=False, key="qs_only_ng")
+
+            if start > end:
+                start, end = end, start
+
+            tmp = sv.copy()
+            tmp["입고일"] = pd.to_datetime(tmp["입고일"], errors="coerce")
+            tmp = tmp.dropna(subset=["입고일"])
+            tmp = tmp[(tmp["입고일"].dt.date >= start) & (tmp["입고일"].dt.date <= end)]
+            if only_ng and "점도판정" in tmp.columns:
+                tmp = tmp[tmp["점도판정"] == "부적합"]
+
+            st.markdown("#### 단일색_수입검사")
+            if len(tmp) == 0:
+                st.info("선택한 기간에 해당하는 데이터가 없습니다.")
+            else:
+                show = _sort_by_date(tmp[single_cols].rename(columns=rename_single), "입고일")
+                st.dataframe(show, use_container_width=True, height=520)
+
+    elif mode == "바인더 Lot":
+        if not q.strip():
+            st.info("검색어를 입력해주세요.")
+        else:
+            # 1) 바인더 시트
+            if "_lot_calc" in bv.columns:
+                b_hit = _contains(bv, q, ["_lot_calc", "바인더명", "비고"], exact=exact)
+            else:
+                b_hit = _contains(bv, q, ["Lot(자동)", "바인더명", "비고"], exact=exact)
+
+            st.markdown("#### 바인더_제조_입고")
+            if len(b_hit) == 0:
+                st.info("해당 바인더 Lot(또는 키워드)에 해당하는 바인더 기록이 없습니다.")
+            else:
+                st.dataframe(_sort_by_date(b_hit[binder_cols], "제조/입고일"), use_container_width=True)
+
+            # 2) 연결 단일색(사용된 바인더 Lot)
+            st.markdown("#### 연결된 단일색_수입검사 (사용된 바인더 Lot)")
+            if "사용된 바인더 Lot" in sv.columns:
+                s_hit = _contains(sv, q, ["사용된 바인더 Lot"], exact=exact)
+                if len(s_hit) == 0:
+                    st.info("해당 바인더 Lot을 사용한 단일색 기록이 없습니다.")
+                else:
+                    st.dataframe(_sort_by_date(s_hit[single_cols].rename(columns=rename_single), "입고일"), use_container_width=True)
+            else:
+                st.info("단일색 시트에 '사용된 바인더 Lot' 컬럼이 없어 연결 조회를 할 수 없습니다.")
+
+    elif mode == "단일색 잉크 Lot":
+        if not q.strip():
+            st.info("검색어를 입력해주세요.")
+        else:
+            st.markdown("#### 단일색_수입검사")
+            if "_lot_calc" in sv.columns:
+                s_hit = _contains(sv, q, ["_lot_calc", "제품코드", "색상군", "사용된 바인더 Lot", "비고"], exact=exact)
+            else:
+                s_hit = _contains(sv, q, ["단일색잉크 Lot", "제품코드", "색상군", "사용된 바인더 Lot", "비고"], exact=exact)
+
+            if len(s_hit) == 0:
+                st.info("해당 단일색 Lot(또는 키워드)에 해당하는 데이터가 없습니다.")
+            else:
+                st.dataframe(_sort_by_date(s_hit[single_cols].rename(columns=rename_single), "입고일"), use_container_width=True)
+
+            # 연결 바인더
+            if len(s_hit) == 1 and "사용된 바인더 Lot" in s_hit.columns:
+                b_lot = str(s_hit.iloc[0].get("사용된 바인더 Lot", "")).strip()
+                if b_lot:
+                    st.markdown("#### 연결된 바인더_제조_입고")
+                    if "_lot_calc" in bv.columns:
+                        b_hit = bv[bv["_lot_calc"].astype(str).str.strip() == b_lot]
+                    else:
+                        b_hit = bv[bv.get("Lot(자동)", pd.Series(dtype=str)).astype(str).str.strip() == b_lot]
+                    if len(b_hit) == 0:
+                        st.info("해당 바인더 Lot이 바인더_제조_입고 시트에서 발견되지 않습니다. (외부/과거 Lot일 수 있음)")
+                    else:
+                        st.dataframe(_sort_by_date(b_hit[binder_cols], "제조/입고일"), use_container_width=True)
+
+    elif mode == "제품코드":
+        if not q.strip():
+            st.info("검색어를 입력해주세요.")
+        else:
+            if "제품코드" not in sv.columns:
+                st.warning("단일색 데이터에 '제품코드' 컬럼이 없습니다.")
+            else:
+                s_hit = _contains(sv, q, ["제품코드"], exact=exact)
+                st.markdown("#### 단일색_수입검사")
+                if len(s_hit) == 0:
+                    st.info("해당 제품코드에 해당하는 단일색 기록이 없습니다.")
+                else:
+                    st.dataframe(_sort_by_date(s_hit[single_cols].rename(columns=rename_single), "입고일"), use_container_width=True)
+
+    elif mode == "색상군":
+        if not q.strip():
+            st.info("검색어를 입력해주세요.")
+        else:
+            if "색상군" not in sv.columns:
+                st.warning("단일색 데이터에 '색상군' 컬럼이 없습니다.")
+            else:
+                s_hit = _contains(sv, q, ["색상군"], exact=exact)
+                st.markdown("#### 단일색_수입검사")
+                if len(s_hit) == 0:
+                    st.info("해당 색상군에 해당하는 단일색 기록이 없습니다.")
+                else:
+                    st.dataframe(_sort_by_date(s_hit[single_cols].rename(columns=rename_single), "입고일"), use_container_width=True)
+
+    else:  # 반품(업체반환)
+        try:
+            ret = pd.read_excel(xlsx_path, sheet_name=SHEET_BINDER_RETURN)
+        except Exception:
+            ret = pd.DataFrame(columns=["일자", "바인더타입", "바인더명", "바인더 Lot", "반환량(kg)", "비고"])
+
+        ret = normalize_df_columns(ret)
+        if "일자" in ret.columns:
+            ret["일자"] = ret["일자"].apply(normalize_date)
+
+        st.markdown("#### 바인더_업체반환 (kg)")
+        if len(ret) == 0:
+            st.info("반품 기록이 없습니다.")
+        else:
+            # 기간 필터 제공
+            if "일자" in ret.columns:
+                dmin, dmax = safe_date_bounds(pd.to_datetime(ret["일자"], errors="coerce"))
+                d1, d2 = st.columns(2)
+                with d1:
+                    start = st.date_input("시작일(반품)", value=max(dmin, dmax - dt.timedelta(days=90)), key="ret_start")
+                with d2:
+                    end = st.date_input("종료일(반품)", value=dmax, key="ret_end")
+                if start > end:
+                    start, end = end, start
+                tmp = ret.copy()
+                tmp["일자"] = pd.to_datetime(tmp["일자"], errors="coerce")
+                tmp = tmp.dropna(subset=["일자"])
+                tmp = tmp[(tmp["일자"].dt.date >= start) & (tmp["일자"].dt.date <= end)]
+            else:
+                tmp = ret
+
+            if q.strip():
+                tmp = _contains(tmp, q, [c for c in ["바인더 Lot", "바인더명", "바인더타입", "비고"] if c in tmp.columns], exact=exact)
+
+            if "일자" in tmp.columns:
+                tmp = _sort_by_date(tmp, "일자")
+
+            if len(tmp) == 0:
+                st.info("선택 조건에 해당하는 반품 기록이 없습니다.")
+            else:
+                show_cols = [c for c in ["일자", "바인더타입", "바인더명", "바인더 Lot", "반환량(kg)", "비고"] if c in tmp.columns]
+                st.dataframe(tmp[show_cols], use_container_width=True, height=520)
