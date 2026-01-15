@@ -33,7 +33,7 @@ def read_gsheet_csv(sheet_id: str, sheet_name: str) -> pd.DataFrame:
 # Config
 # ==========================================================
 DEFAULT_XLSX = "액상잉크_Lot추적관리_FINAL.xlsx"
-DEFAULT_STOCK_XLSX = "액상 재고조사표_자동계산 (12).xlsx"  # ✅ 재고 엑셀 기본값
+DEFAULT_STOCK_XLSX = "액상 재고조사표_자동계산 (12).xlsx"
 
 SHEET_BINDER = "바인더_제조_입고"
 SHEET_SINGLE = "단일색_수입검사"
@@ -408,45 +408,70 @@ def add_excel_row_number(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ==========================================================
-# ✅ Stock (재고/발주/사용량) Helpers
+# Stock (재고/발주/사용량) - 별도 탭
 # ==========================================================
-def canonical_color_name(x: str | None) -> str:
-    """구분/텍스트에서 색상 계열을 통일된 영문 키로 정규화."""
-    if x is None:
+def normalize_color_group(x) -> str:
+    if x is None or (isinstance(x, float) and pd.isna(x)):
         return "Other"
-    s = norm_key(x).upper()
-
-    # 한글/영문 혼용 대응
-    if any(k in s for k in ["BLACK", "BLK", "검정", "블랙", "BK"]):
+    s = str(x).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return "Other"
+    u = s.upper()
+    # 한글/영문 혼용 방어
+    if "BLACK" in u or "검정" in s or "흑" in s:
         return "Black"
-    if any(k in s for k in ["WHITE", "WHT", "흰", "화이트"]):
+    if "WHITE" in u or "흰" in s or "백" in s:
         return "White"
-    if any(k in s for k in ["RED", "RD", "빨강", "레드"]):
+    if "RED" in u or "빨" in s or "적" in s:
         return "Red"
-    if any(k in s for k in ["YELLOW", "YEL", "노랑", "옐로", "옐로우"]):
+    if "YELLOW" in u or "노" in s or "황" in s or "옐" in s:
         return "Yellow"
-    if any(k in s for k in ["GREEN", "GRN", "초록", "그린"]):
+    if "GREEN" in u or "초" in s or "녹" in s:
         return "Green"
-    if any(k in s for k in ["BLUE", "BLU", "파랑", "블루"]):
+    if "BLUE" in u or "파" in s or "청" in s:
         return "Blue"
-    if any(k in s for k in ["PINK", "핑크"]):
+    if "PINK" in u or "핑" in s:
         return "Pink"
-
+    # 이미 표준형이면
+    if s in ["Black","White","Red","Yellow","Green","Blue","Pink"]:
+        return s
     return "Other"
 
+def build_product_to_color_map(spec_single: pd.DataFrame, single_df: pd.DataFrame) -> dict[str, str]:
+    """
+    품목명(=제품코드) -> 색상군 매핑 생성
+    우선순위: Spec_Single_H&S > 단일색_수입검사 기록(빈칸 보정)
+    """
+    mapping: dict[str, str] = {}
+
+    sp_pc = find_col(spec_single, "제품코드")
+    sp_cg = find_col(spec_single, "색상군")
+    if sp_pc and sp_cg and len(spec_single):
+        tmp = spec_single[[sp_pc, sp_cg]].dropna()
+        tmp[sp_pc] = tmp[sp_pc].astype(str).str.strip()
+        tmp[sp_cg] = tmp[sp_cg].apply(normalize_color_group)
+        # 제품코드 중복이면 최빈값
+        for pc, g in tmp.groupby(sp_pc)[sp_cg]:
+            mapping[pc] = g.value_counts().idxmax()
+
+    s_pc = find_col(single_df, "제품코드")
+    s_cg = find_col(single_df, "색상군")
+    if s_pc and s_cg and len(single_df):
+        tmp = single_df[[s_pc, s_cg]].dropna()
+        tmp[s_pc] = tmp[s_pc].astype(str).str.strip()
+        tmp[s_cg] = tmp[s_cg].apply(normalize_color_group)
+        for pc, g in tmp.groupby(s_pc)[s_cg]:
+            if pc not in mapping:
+                mapping[pc] = g.value_counts().idxmax()
+
+    return mapping
+
 def _parse_stock_sheet_date(sheet_name: str, today: dt.date) -> dt.date | None:
-    """
-    시트명: '10.31', '1.15' 형태를 날짜로 변환.
-    연도는 오늘 기준 추정:
-      - sheet month가 (today.month + 1)보다 크면 전년도 처리
-      - 아니면 올해
-    """
     s = str(sheet_name).strip()
-    m = re.search(r"(\d{1,2})\.(\d{1,2})", s)
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})$", s)
     if not m:
         return None
-    month = int(m.group(1))
-    day = int(m.group(2))
+    month = int(m.group(1)); day = int(m.group(2))
     year = today.year
     if month > (today.month + 1):
         year -= 1
@@ -455,23 +480,13 @@ def _parse_stock_sheet_date(sheet_name: str, today: dt.date) -> dt.date | None:
     except ValueError:
         return None
 
-def _pick_stock_cols(df: pd.DataFrame):
-    """재고 파일에서 사용할 컬럼을 norm_key로 최대한 찾아줍니다."""
-    c_group = find_col(df, "구분") or find_col(df, "색상군") or find_col(df, "그룹")
-    c_item  = find_col(df, "품목명") or find_col(df, "품명") or find_col(df, "단일색")
-    c_prev  = find_col(df, "전일 재고(kg)") or find_col(df, "전일재고(kg)") or find_col(df, "전일재고")
-    c_curr  = find_col(df, "금일 재고(kg)") or find_col(df, "금일재고(kg)") or find_col(df, "금일재고") or find_col(df, "재고(kg)")
-    c_used  = find_col(df, "하루 사용량(kg)") or find_col(df, "하루사용량(kg)") or find_col(df, "사용량(kg)") or find_col(df, "사용량")
-    return c_group, c_item, c_prev, c_curr, c_used
-
 @st.cache_data(show_spinner=False)
-def load_stock_history(stock_xlsx_path: str) -> pd.DataFrame:
+def load_stock_history(stock_xlsx_path: str, product_to_color: dict[str, str]) -> pd.DataFrame:
     """
-    재고 엑셀(일자별 시트) -> long-form history
-    반환 컬럼:
-      date, color_key(구분 정규화), item_key(품목명), curr_stock_kg, used_kg, inbound_kg, inbound_event
+    재고 엑셀(일자별 시트) -> long-form
+    expected cols: 구분, 품목명, 전일 재고(kg), 금일 재고(kg), 하루 사용량(kg)
     """
-    if not stock_xlsx_path or (not Path(stock_xlsx_path).exists()):
+    if not stock_xlsx_path or not Path(stock_xlsx_path).exists():
         return pd.DataFrame()
 
     today = dt.date.today()
@@ -486,117 +501,95 @@ def load_stock_history(stock_xlsx_path: str) -> pd.DataFrame:
         df = pd.read_excel(xls, sheet_name=sh)
         df = df.rename(columns=lambda x: str(x).strip())
 
-        c_group, c_item, _, c_curr, c_used = _pick_stock_cols(df)
-        if not c_curr or not c_used:
+        c_div = find_col(df, "구분")
+        c_item = find_col(df, "품목명")
+        c_curr = find_col(df, "금일 재고(kg)") or find_col(df, "금일재고(kg)") or find_col(df, "재고(kg)")
+        c_used = find_col(df, "하루 사용량(kg)") or find_col(df, "사용량(kg)") or find_col(df, "사용량")
+
+        if not (c_item and c_curr and c_used):
             continue
 
-        df["_group_raw"] = df[c_group].astype(str).str.strip() if c_group else None
-        df["_item_raw"] = df[c_item].astype(str).str.strip() if c_item else None
+        df["_division"] = df[c_div].astype(str).str.strip() if c_div else ""
+        df["_product"] = df[c_item].astype(str).str.strip()
 
-        # 최소한 하나는 있어야 함
-        if c_group is None and c_item is None:
-            continue
-
-        # 숫자화
         df["_curr"] = pd.to_numeric(df[c_curr].astype(str).str.replace(",", "", regex=False), errors="coerce")
         df["_used_raw"] = pd.to_numeric(df[c_used].astype(str).str.replace(",", "", regex=False), errors="coerce")
+        df = df.dropna(subset=["_product", "_curr"])
 
-        df = df.dropna(subset=["_curr"])
-        df["curr_stock_kg"] = df["_curr"].fillna(0)
-
-        # 사용량/입고량 분리: 사용량(+) = used, 사용량(-) = inbound
         df["used_kg"] = df["_used_raw"].clip(lower=0).fillna(0)
         df["inbound_kg"] = (-df["_used_raw"]).clip(lower=0).fillna(0)
         df["inbound_event"] = (df["inbound_kg"] > 0).astype(int)
+        df["curr_stock_kg"] = df["_curr"].fillna(0)
 
-        # 색상키(구분 기반)
-        df["color_key"] = df["_group_raw"].apply(canonical_color_name) if c_group else "Other"
-        # 품목키(품목명)
-        df["item_key"] = df["_item_raw"].fillna("Unknown") if c_item else df["color_key"]
+        df["color_group"] = df["_product"].map(product_to_color).fillna("Other").apply(normalize_color_group)
 
         df["date"] = pd.to_datetime(d)
-        frames.append(df[["date", "color_key", "item_key", "curr_stock_kg", "used_kg", "inbound_kg", "inbound_event"]])
+        frames.append(df[["date","_division","_product","color_group","curr_stock_kg","used_kg","inbound_kg","inbound_event"]])
 
     if not frames:
         return pd.DataFrame()
 
     hist = pd.concat(frames, ignore_index=True)
-    hist = hist.sort_values(["date", "color_key", "item_key"]).reset_index(drop=True)
+    hist = hist.rename(columns={"_division":"division", "_product":"product_code"})
+    hist = hist.sort_values(["date","division","product_code"]).reset_index(drop=True)
     return hist
 
-def color_scale_fixed():
-    """색상 계열 고정(가시성 우선)."""
-    domain = ["Black", "Blue", "Green", "Yellow", "Red", "Pink", "White", "Other"]
-    range_ = [
-        "#000000",  # Black
-        "#1f77b4",  # Blue
-        "#2ca02c",  # Green
-        "#f1c40f",  # Yellow
-        "#d62728",  # Red
-        "#e377c2",  # Pink
-        "#bdbdbd",  # White(회색톤)
-        "#7f7f7f",  # Other
-    ]
-    return alt.Scale(domain=domain, range=range_)
+def _color_scale_color_group():
+    domain = ["Black","Blue","Green","Yellow","Red","Pink","White","Other"]
+    rng = ["#111111","#1f77b4","#2ca02c","#f1c40f","#d62728","#e377c2","#dddddd","#7f7f7f"]
+    return alt.Scale(domain=domain, range=rng)
 
-def top_n_with_others(df: pd.DataFrame, key_col: str, val_col: str, n: int = 8, other_label: str = "Other"):
-    """파이차트 너무 복잡할 때 상위 N만 남기고 나머지는 Other로 합침."""
-    df = df.copy()
-    df = df.sort_values(val_col, ascending=False)
-    if len(df) <= n:
-        return df
-    keep = df.iloc[: n-1].copy()
-    rest = df.iloc[n-1:].copy()
-    other_val = rest[val_col].sum()
-    other_row = pd.DataFrame({key_col: [other_label], val_col: [other_val]})
-    out = pd.concat([keep, other_row], ignore_index=True)
-    return out
+def _donut_chart(df: pd.DataFrame, cat_col: str, val_col: str, title: str):
+    base = alt.Chart(df).mark_arc(innerRadius=70).encode(
+        theta=alt.Theta(f"{val_col}:Q", title=None),
+        color=alt.Color(f"{cat_col}:N", scale=_color_scale_color_group(), legend=alt.Legend(title="색상계열")),
+        tooltip=[alt.Tooltip(f"{cat_col}:N", title="색상계열"),
+                 alt.Tooltip(f"{val_col}:Q", title="kg", format=",.1f")]
+    ).properties(title=title)
+    return base
 
-def render_stock_management_tab(stock_xlsx_path: str):
-    st.title("📦 액상잉크 재고관리")
-    st.caption("재고/발주(입고)/사용량을 한눈에 보기 좋게 정리했습니다. 기본은 '구분(색상계열)' 기준으로 집계됩니다.")
+def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df: pd.DataFrame):
+    st.title("액상잉크 재고관리")
+    st.caption("재고/발주(입고)/사용량을 색상계열(Black/Red/...) 기준으로 한눈에 보이게 정리합니다.")
 
-    if st.button("🔄 재고 데이터 새로고침", key="stock_refresh_btn"):
-        st.cache_data.clear()
-        st.rerun()
+    product_to_color = build_product_to_color_map(spec_single, single_df)
+    hist = load_stock_history(stock_xlsx_path, product_to_color)
 
-    hist = load_stock_history(stock_xlsx_path)
     if hist.empty:
-        st.info("재고 파일을 찾지 못했거나(경로/업로드 확인), 읽을 수 있는 시트/컬럼이 없습니다.")
-        return
+        st.error("재고 엑셀을 읽지 못했습니다. (파일 경로/시트명(예: 1.15)/컬럼명 확인 필요)")
+        st.stop()
 
-    # 기간 선택
-    dmin = hist["date"].min().date()
-    dmax = hist["date"].max().date()
-    cA, cB, cC = st.columns([2.2, 2.2, 5.6])
-    with cA:
-        start = st.date_input("시작일", value=max(dmin, dmax - dt.timedelta(days=60)), min_value=dmin, max_value=dmax, key="stock_start")
-    with cB:
-        end = st.date_input("종료일", value=dmax, min_value=dmin, max_value=dmax, key="stock_end")
-    with cC:
-        agg = st.selectbox("집계 기준", ["구분(색상계열) 기준(추천)", "품목명 기준(상세)"], index=0, key="stock_agg")
-
+    # 기간/필터
+    min_d = hist["date"].min().date()
+    max_d = hist["date"].max().date()
+    colA, colB, colC = st.columns([2.2, 2.2, 5.6])
+    with colA:
+        start = st.date_input("시작일", value=max(min_d, max_d - dt.timedelta(days=30)), min_value=min_d, max_value=max_d, key="stock_start")
+    with colB:
+        end = st.date_input("종료일", value=max_d, min_value=min_d, max_value=max_d, key="stock_end")
     if start > end:
         start, end = end, start
 
-    hf = hist[(hist["date"].dt.date >= start) & (hist["date"].dt.date <= end)].copy()
-    if hf.empty:
-        st.warning("선택 기간에 데이터가 없습니다.")
-        return
+    divisions = sorted([x for x in hist["division"].dropna().unique().tolist() if str(x).strip() and str(x).lower() not in ("nan","none")])
+    with colC:
+        sel_div = st.multiselect("구분(PL/NPL/NSL 등) 필터", divisions, default=divisions, key="stock_div")
 
-    key_col = "color_key" if agg.startswith("구분") else "item_key"
+    filt = (hist["date"].dt.date >= start) & (hist["date"].dt.date <= end)
+    if sel_div:
+        filt = filt & (hist["division"].isin(sel_div))
+    hist_f = hist[filt].copy()
 
-    # 최신일(선택 기간 내)
-    latest_date = hf["date"].max()
-    latest_df = hf[hf["date"] == latest_date].copy()
+    latest_date = hist["date"].max()
+    latest_df = hist[hist["date"] == latest_date].copy()
+    if sel_div:
+        latest_df = latest_df[latest_df["division"].isin(sel_div)].copy()
 
     # KPI
     total_stock = float(latest_df["curr_stock_kg"].sum())
-    total_used = float(hf["used_kg"].sum())
-    total_inbound = float(hf["inbound_kg"].sum())
-    inbound_events = int(hf["inbound_event"].sum())
+    total_used = float(hist_f["used_kg"].sum())
+    total_inbound = float(hist_f["inbound_kg"].sum())
+    inbound_events = int(hist_f["inbound_event"].sum())
 
-    st.subheader("0) 재고 / 발주(입고) / 사용량")
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("재고 최신일", latest_date.date().isoformat())
     k2.metric("현재 총 재고(kg)", f"{total_stock:,.1f}")
@@ -605,111 +598,92 @@ def render_stock_management_tab(stock_xlsx_path: str):
 
     st.divider()
 
-    # ===== 1) 현재 재고 파이(도넛) =====
-    inv = (latest_df.groupby(key_col, as_index=False)["curr_stock_kg"]
-           .sum().rename(columns={"curr_stock_kg": "value"}))
+    # 색상 매핑 커버리지 체크
+    share_other = (latest_df["color_group"] == "Other").mean() if len(latest_df) else 1.0
+    if share_other > 0.8:
+        st.warning("⚠️ 제품코드 → 색상군 매핑이 대부분 'Other'로 잡혔습니다. (Spec_Single_H&S 또는 단일색_수입검사에서 제품코드-색상군 매칭 확인 필요)\n"
+                   "그래도 아래에 제품코드(품목명) 기준 Top 리스트를 같이 보여드립니다.")
 
-    # 상세(품목명)일 때 너무 복잡하면 자동 축약
-    if key_col == "item_key":
-        inv = top_n_with_others(inv, "item_key", "value", n=10, other_label="Other")
-        inv_key = "item_key"
-        color_enc = alt.Color("color_key:N", scale=color_scale_fixed(), legend=alt.Legend(title="색상계열"))
-        # Other 포함 처리 위해 color_key 생성
-        inv["color_key"] = inv["item_key"].apply(canonical_color_name)
-    else:
-        inv_key = "color_key"
-        color_enc = alt.Color("color_key:N", scale=color_scale_fixed(), legend=alt.Legend(title="색상계열"))
+    # 1) 현재 재고 (최신일) - 색상계열
+    inv = latest_df.groupby("color_group", as_index=False)["curr_stock_kg"].sum().rename(columns={"curr_stock_kg":"kg"})
+    inv = inv.sort_values("kg", ascending=False)
 
-    left, right = st.columns(2)
+    # 2) 발주/입고 (기간 합) - 색상계열
+    inbound = hist_f.groupby("color_group", as_index=False)["inbound_kg"].sum().rename(columns={"inbound_kg":"kg"})
+    inbound = inbound[inbound["kg"] > 0].sort_values("kg", ascending=False)
 
-    with left:
-        st.markdown("### 1) 현재 재고(최신일)")
-        ch_inv = alt.Chart(inv).mark_arc(innerRadius=70, stroke="white", strokeWidth=1).encode(
-            theta=alt.Theta("value:Q", title="재고(kg)"),
-            color=color_enc,
-            tooltip=[alt.Tooltip(f"{inv_key}:N", title="구분"),
-                     alt.Tooltip("value:Q", title="재고(kg)", format=",.1f")]
-        )
-        st.altair_chart(ch_inv, use_container_width=True)
-
-    # ===== 2) 발주/입고 파이(도넛) =====
-    ord_df = (hf.groupby(key_col, as_index=False)["inbound_kg"]
-              .sum().rename(columns={"inbound_kg": "value"}))
-    ord_df = ord_df[ord_df["value"] > 0]
-
-    if key_col == "item_key":
-        ord_df = top_n_with_others(ord_df, "item_key", "value", n=10, other_label="Other")
-        ord_key = "item_key"
-        ord_df["color_key"] = ord_df["item_key"].apply(canonical_color_name)
-        color_enc2 = alt.Color("color_key:N", scale=color_scale_fixed(), legend=alt.Legend(title="색상계열"))
-    else:
-        ord_key = "color_key"
-        color_enc2 = alt.Color("color_key:N", scale=color_scale_fixed(), legend=alt.Legend(title="색상계열"))
-
-    with right:
-        st.markdown("### 2) 발주/입고(기간 합)")
-        if ord_df.empty:
-            st.info("선택 기간에 입고(발주 반영)로 추정되는 기록이 없습니다.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("1) 현재 재고(최신일) - 색상계열")
+        if len(inv) == 0 or inv["kg"].sum() <= 0:
+            st.info("표시할 재고 데이터가 없습니다.")
         else:
-            ch_ord = alt.Chart(ord_df).mark_arc(innerRadius=70, stroke="white", strokeWidth=1).encode(
-                theta=alt.Theta("value:Q", title="발주/입고(kg)"),
-                color=color_enc2,
-                tooltip=[alt.Tooltip(f"{ord_key}:N", title="구분"),
-                         alt.Tooltip("value:Q", title="발주/입고(kg)", format=",.1f")]
-            )
-            st.altair_chart(ch_ord, use_container_width=True)
+            st.altair_chart(_donut_chart(inv, "color_group", "kg", ""), use_container_width=True)
+            t = inv.copy()
+            t["비중(%)"] = (t["kg"] / t["kg"].sum() * 100).round(1)
+            st.dataframe(t.rename(columns={"color_group":"색상계열"}), use_container_width=True, height=220)
+
+    with c2:
+        st.subheader("2) 발주/입고(기간 합) - 색상계열")
+        if len(inbound) == 0:
+            st.info("선택 기간에 발주/입고(재고 증가)로 추정되는 기록이 없습니다.")
+        else:
+            st.altair_chart(_donut_chart(inbound, "color_group", "kg", ""), use_container_width=True)
+            t = inbound.copy()
+            t["비중(%)"] = (t["kg"] / t["kg"].sum() * 100).round(1)
+            st.dataframe(t.rename(columns={"color_group":"색상계열"}), use_container_width=True, height=220)
 
     st.divider()
 
-    # ===== 3) 일별 사용량 라인 =====
-    st.markdown("### 3) 일별 사용량(kg)")
+    # 3) 일별 사용량
+    st.subheader("3) 일별 사용량(kg) - 색상계열")
+    keys = ["Black","Blue","Green","Yellow","Red","Pink","White","Other"]
+    default_keys = [k for k in keys if k in hist_f["color_group"].unique().tolist()]
+    sel_keys = st.multiselect("표시할 색상계열", keys, default=default_keys, key="stock_color_sel")
 
-    # 일별 합계/키별
-    daily_key = (hf.groupby(["date", key_col], as_index=False)["used_kg"].sum())
-    daily_total = (hf.groupby("date", as_index=False)["used_kg"].sum().rename(columns={"used_kg": "TOTAL"}))
+    daily = hist_f[hist_f["color_group"].isin(sel_keys)].groupby(["date","color_group"], as_index=False)["used_kg"].sum()
+    total = hist_f.groupby("date", as_index=False)["used_kg"].sum().rename(columns={"used_kg":"TOTAL"})
 
-    if key_col == "item_key":
-        # 상세일 때는 라인이 너무 많아지니 top만 선택하도록
-        top_items = (hf.groupby("item_key", as_index=False)["used_kg"].sum()
-                     .sort_values("used_kg", ascending=False).head(8)["item_key"].tolist())
-        sel_items = st.multiselect("표시할 품목(상위 8개 기본)", sorted(hf["item_key"].unique().tolist()),
-                                   default=top_items, key="stock_sel_items")
-        daily_key = daily_key[daily_key["item_key"].isin(sel_items)].copy()
-        daily_key["color_key"] = daily_key["item_key"].apply(canonical_color_name)
-        color_line = alt.Color("color_key:N", scale=color_scale_fixed(), legend=alt.Legend(title="색상계열"))
-        detail_tooltip = [alt.Tooltip("item_key:N", title="품목명")]
-    else:
-        color_line = alt.Color("color_key:N", scale=color_scale_fixed(), legend=alt.Legend(title="색상계열"))
-        detail_tooltip = [alt.Tooltip("color_key:N", title="구분")]
-
-    line = alt.Chart(daily_key).mark_line(point=True).encode(
+    line = alt.Chart(daily).mark_line(point=True).encode(
         x=alt.X("date:T", title="날짜"),
         y=alt.Y("used_kg:Q", title="사용량(kg)"),
-        color=color_line,
-        tooltip=[alt.Tooltip("date:T", title="날짜")] + detail_tooltip + [alt.Tooltip("used_kg:Q", title="사용량(kg)", format=",.1f")]
+        color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=alt.Legend(title="색상계열")),
+        tooltip=[alt.Tooltip("date:T", title="날짜"),
+                 alt.Tooltip("color_group:N", title="색상계열"),
+                 alt.Tooltip("used_kg:Q", title="사용량(kg)", format=",.1f")]
     )
 
-    total_line = alt.Chart(daily_total).mark_line(point=True, strokeDash=[6, 3], color="#111111").encode(
+    total_line = alt.Chart(total).mark_line(point=True, strokeDash=[6,3]).encode(
         x="date:T",
         y=alt.Y("TOTAL:Q", title="사용량(kg)"),
-        tooltip=[alt.Tooltip("date:T", title="날짜"), alt.Tooltip("TOTAL:Q", title="TOTAL(kg)", format=",.1f")]
+        tooltip=[alt.Tooltip("date:T", title="날짜"),
+                 alt.Tooltip("TOTAL:Q", title="TOTAL(kg)", format=",.1f")]
     )
 
     st.altair_chart((line + total_line).interactive(), use_container_width=True)
 
-    with st.expander("데이터 테이블(원본/집계) 보기"):
-        st.write("최신일 원본(필터 후):")
-        st.dataframe(latest_df.sort_values("curr_stock_kg", ascending=False), use_container_width=True)
-        st.write("발주/입고 집계(기간):")
-        st.dataframe(ord_df.sort_values("value", ascending=False), use_container_width=True)
-        st.write("일별 TOTAL:")
-        st.dataframe(daily_total, use_container_width=True)
+    # 품목 Top 리스트(가시성 강화)
+    with st.expander("📌 (상세) 품목코드 기준 Top 10 보기"):
+        top_stock = latest_df.groupby("product_code", as_index=False)["curr_stock_kg"].sum().sort_values("curr_stock_kg", ascending=False).head(10)
+        top_in = hist_f.groupby("product_code", as_index=False)["inbound_kg"].sum().sort_values("inbound_kg", ascending=False).head(10)
+        top_use = hist_f.groupby("product_code", as_index=False)["used_kg"].sum().sort_values("used_kg", ascending=False).head(10)
+
+        a, b, c = st.columns(3)
+        with a:
+            st.markdown("**현재 재고 Top10(품목)**")
+            st.dataframe(top_stock, use_container_width=True, height=260)
+        with b:
+            st.markdown("**발주/입고량 Top10(품목, 기간합)**")
+            st.dataframe(top_in, use_container_width=True, height=260)
+        with c:
+            st.markdown("**사용량 Top10(품목, 기간합)**")
+            st.dataframe(top_use, use_container_width=True, height=260)
 
 # ==========================================================
 # UI Header
 # ==========================================================
 st.title("액상 잉크 Lot 추적 관리 대시보드")
-st.caption("✅ 대시보드(목록/평균/추이)  |  ✅ 잉크 입고(엑셀 누적)  |  ✅ 바인더 입출고(구글시트 최신순)  |  ✅ 반품(kg) 기록  |  ✅ 빠른검색/수정")
+st.caption("✅ 대시보드(목록/평균/추이)  |  ✅ 잉크 입고(엑셀 누적)  |  ✅ 바인더 입출고(구글시트 최신순)  |  ✅ 반품(kg) 기록  |  ✅ 빠른검색/수정  |  ✅ 재고관리(재고/발주/사용량)")
 
 # ==========================================================
 # Data file selection
@@ -717,10 +691,10 @@ st.caption("✅ 대시보드(목록/평균/추이)  |  ✅ 잉크 입고(엑셀 
 with st.sidebar:
     st.header("데이터 파일")
     xlsx_path = st.text_input("엑셀 파일 경로", value=DEFAULT_XLSX)
-    uploaded = st.file_uploader("또는 엑셀 업로드(업로드 모드: 서버 저장 보장 X)", type=["xlsx"])
+    uploaded = st.file_uploader("또는 엑셀 업로드(업로드 모드: 서버 저장 보장 X)", type=["xlsx"], key="lot_upload")
 
     st.divider()
-    st.header("재고 파일(선택)")
+    st.header("재고 파일")
     stock_xlsx_path = st.text_input("재고 엑셀 파일 경로", value=DEFAULT_STOCK_XLSX, key="stock_path")
     uploaded_stock = st.file_uploader("또는 재고 엑셀 업로드", type=["xlsx"], key="stock_upload")
 
@@ -733,9 +707,8 @@ if uploaded is not None:
         st.session_state["_uploaded_sig"] = upload_sig
         st.session_state["_tmp_xlsx_path"] = str(tmp_path)
     xlsx_path = st.session_state.get("_tmp_xlsx_path", xlsx_path)
-    st.sidebar.info("업로드 파일로 실행 중입니다. (서버 재시작 시 누적이 보장되지 않습니다.)")
+    st.sidebar.info("업로드 파일(Lot관리)로 실행 중입니다. (서버 재시작 시 누적이 보장되지 않습니다.)")
 
-# ✅ 재고 업로드 파일도 동일 처리
 if uploaded_stock is not None:
     upload_sig_stock = f"{uploaded_stock.name}:{uploaded_stock.size}"
     if st.session_state.get("_uploaded_sig_stock") != upload_sig_stock:
@@ -744,7 +717,7 @@ if uploaded_stock is not None:
         st.session_state["_uploaded_sig_stock"] = upload_sig_stock
         st.session_state["_tmp_stock_path"] = str(tmp_stock)
     stock_xlsx_path = st.session_state.get("_tmp_stock_path", stock_xlsx_path)
-    st.sidebar.info("재고 파일은 업로드 모드로 실행 중입니다. (서버 재시작 시 누적 보장 X)")
+    st.sidebar.info("업로드 파일(재고)로 실행 중입니다. (서버 재시작 시 누적이 보장되지 않습니다.)")
 
 if not Path(xlsx_path).exists():
     st.error(f"엑셀 파일을 찾을 수 없습니다: {xlsx_path}")
@@ -785,15 +758,13 @@ c_s_pc = find_col(single_df, "제품코드")
 # ΔE76
 single_df["_ΔE76"] = compute_de76_series(single_df, base_lab)
 
-# ==========================================================
 # tabs (✅ 재고 탭 추가)
-# ==========================================================
 tab_dash, tab_stock, tab_ink_in, tab_binder, tab_search = st.tabs(
     ["📊 대시보드", "📦 액상잉크 재고관리", "✍️ 잉크 입고", "📦 바인더 입출고", "🔎 빠른검색/수정"]
 )
 
 # ==========================================================
-# Dashboard (기존 그대로, 재고 섹션 제거)
+# Dashboard
 # ==========================================================
 with tab_dash:
     # KPI
@@ -961,12 +932,15 @@ with tab_dash:
 
                 layers = [line, pts, lbl]
 
+                # 스펙선(빨간선)
                 if spec_lo is not None:
                     lo_df = pd.DataFrame({"y": [spec_lo]})
-                    layers.append(alt.Chart(lo_df).mark_rule(color="red").encode(y="y:Q"))
+                    lo_rule = alt.Chart(lo_df).mark_rule(color="red").encode(y="y:Q")
+                    layers.append(lo_rule)
                 if spec_hi is not None:
                     hi_df = pd.DataFrame({"y": [spec_hi]})
-                    layers.append(alt.Chart(hi_df).mark_rule(color="red").encode(y="y:Q"))
+                    hi_rule = alt.Chart(hi_df).mark_rule(color="red").encode(y="y:Q")
+                    layers.append(hi_rule)
 
                 st.altair_chart(alt.layer(*layers).interactive(), use_container_width=True)
 
@@ -996,6 +970,7 @@ with tab_dash:
                             st.error(f"스펙 저장 실패: {e}")
 
     st.divider()
+
     st.subheader("최근 20건 (단일색)")
     show = single_df.copy()
     if c_s_date:
@@ -1050,14 +1025,13 @@ with tab_dash:
                         st.error(f"저장 실패: {e}")
 
 # ==========================================================
-# ✅ Stock Tab (신규)
+# Stock Tab
 # ==========================================================
 with tab_stock:
     if stock_xlsx_path and Path(stock_xlsx_path).exists():
-        render_stock_management_tab(stock_xlsx_path)
+        render_stock_tab(stock_xlsx_path, spec_single, single_df)
     else:
-        st.title("📦 액상잉크 재고관리")
-        st.info("좌측 사이드바에서 재고 엑셀 경로를 지정하거나 업로드해 주세요.")
+        st.error("재고 파일 경로가 올바르지 않습니다. (좌측 사이드바에서 재고 파일 경로/업로드 설정)")
 
 # ==========================================================
 # 잉크 입고 (단일색 입력)
@@ -1076,6 +1050,7 @@ with tab_ink_in:
     color_groups = sorted(spec_single[cg_col].dropna().unique().tolist()) if cg_col else []
     product_codes = sorted(spec_single[pc_col].dropna().unique().tolist()) if pc_col else []
 
+    # 바인더 Lot 후보: 엑셀(바인더_제조_입고) + 구글시트(바인더 입출고) LOT
     c_blot = find_col(binder_df, "Lot(자동)")
     binder_lots_excel = binder_df[c_blot].dropna().astype(str).tolist() if c_blot else []
 
@@ -1154,10 +1129,7 @@ with tab_ink_in:
             note2 = note
             if lab_enabled:
                 base_pc = find_col(base_lab, "제품코드")
-                if base_pc:
-                    base_hit = base_lab[base_lab[base_pc].astype(str).str.strip() == str(product_code).strip()]
-                else:
-                    base_hit = pd.DataFrame()
+                base_hit = base_lab[base_lab[base_pc].astype(str).str.strip() == str(product_code).strip()] if base_pc else pd.DataFrame()
 
                 bL = find_col(base_lab, "기준_L*")
                 ba = find_col(base_lab, "기준_a*")
@@ -1517,6 +1489,7 @@ with tab_search:
         hit_b_show = add_excel_row_number(hit_b.sort_values(by=c_b_date, ascending=False) if c_b_date else hit_b)
         st.dataframe(hit_b_show, use_container_width=True)
 
+        hit_s_show = None
         if q and c_s_blot:
             hit_s = s_df[s_df[c_s_blot].astype(str).str.contains(str(q).strip(), case=False, na=False)]
             st.subheader("연결된 단일색_수입검사 (사용된 바인더 Lot)")
@@ -1552,7 +1525,7 @@ with tab_search:
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
 
-            if q and c_s_blot and 'hit_s_show' in locals() and len(hit_s_show) > 0:
+            if q and c_s_blot and hit_s_show is not None and len(hit_s_show) > 0:
                 st.markdown("#### 🔧 연결된 단일색 결과 수정")
                 edited_s = st.data_editor(hit_s_show, use_container_width=True, num_rows="fixed", disabled=["_excel_row"], key="qs_edit_single_by_binder")
                 if st.button("변경사항 저장(연결 단일색)", type="primary", key="qs_save_single_by_binder"):
@@ -1585,15 +1558,6 @@ with tab_search:
         st.subheader("단일색_수입검사")
         hit_show = add_excel_row_number(hit.sort_values(by=c_s_date, ascending=False) if c_s_date else hit)
         st.dataframe(hit_show, use_container_width=True)
-
-        if len(hit) == 1 and c_s_blot:
-            b_lot = str(hit.iloc[0].get(c_s_blot, "")).strip()
-            if b_lot:
-                c_bl = find_col(b_df, "Lot(자동)")
-                hit_b = b_df[b_df[c_bl].astype(str) == b_lot] if c_bl else b_df.iloc[0:0]
-                if len(hit_b):
-                    st.subheader("연결된 바인더_제조_입고")
-                    st.dataframe(add_excel_row_number(hit_b), use_container_width=True)
 
         if edit_mode and len(hit_show) > 0:
             st.markdown("#### 🔧 검색 결과 수정")
@@ -1629,64 +1593,8 @@ with tab_search:
         hit_show = add_excel_row_number(hit.sort_values(by=c_s_date, ascending=False) if c_s_date else hit)
         st.dataframe(hit_show, use_container_width=True)
 
-        if edit_mode and len(hit_show) > 0:
-            st.markdown("#### 🔧 검색 결과 수정")
-            edited = st.data_editor(hit_show, use_container_width=True, num_rows="fixed", disabled=["_excel_row"], key="qs_edit_pc")
-            if st.button("변경사항 저장(제품코드 검색)", type="primary", key="qs_save_pc"):
-                updates = []
-                for i in range(len(hit_show)):
-                    excel_row = int(hit_show.iloc[i]["_excel_row"])
-                    for col in hit_show.columns:
-                        if col == "_excel_row":
-                            continue
-                        before = hit_show.iloc[i][col]
-                        after = edited.iloc[i][col]
-                        if (pd.isna(before) and pd.isna(after)) or (str(before) == str(after)):
-                            continue
-                        if "일" in norm_key(col):
-                            after = normalize_date(after)
-                        updates.append((excel_row, col, after))
-                if not updates:
-                    st.info("변경된 값이 없습니다.")
-                else:
-                    try:
-                        update_sheet_cells(xlsx_path, SHEET_SINGLE, updates)
-                        st.success("저장 완료!")
-                        st.cache_data.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"저장 실패: {e}")
-
     elif mode == "색상군":
         hit = text_filter(s_df, [c_s_cg], q)
         st.subheader("단일색_수입검사")
         hit_show = add_excel_row_number(hit.sort_values(by=c_s_date, ascending=False) if c_s_date else hit)
         st.dataframe(hit_show, use_container_width=True)
-
-        if edit_mode and len(hit_show) > 0:
-            st.markdown("#### 🔧 검색 결과 수정")
-            edited = st.data_editor(hit_show, use_container_width=True, num_rows="fixed", disabled=["_excel_row"], key="qs_edit_cg")
-            if st.button("변경사항 저장(색상군 검색)", type="primary", key="qs_save_cg"):
-                updates = []
-                for i in range(len(hit_show)):
-                    excel_row = int(hit_show.iloc[i]["_excel_row"])
-                    for col in hit_show.columns:
-                        if col == "_excel_row":
-                            continue
-                        before = hit_show.iloc[i][col]
-                        after = edited.iloc[i][col]
-                        if (pd.isna(before) and pd.isna(after)) or (str(before) == str(after)):
-                            continue
-                        if "일" in norm_key(col):
-                            after = normalize_date(after)
-                        updates.append((excel_row, col, after))
-                if not updates:
-                    st.info("변경된 값이 없습니다.")
-                else:
-                    try:
-                        update_sheet_cells(xlsx_path, SHEET_SINGLE, updates)
-                        st.success("저장 완료!")
-                        st.cache_data.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"저장 실패: {e}")
