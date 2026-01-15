@@ -392,6 +392,15 @@ def detect_date_col(df: pd.DataFrame):
             return c
     return None
 
+
+def detect_lot_col(df: pd.DataFrame):
+    """구글시트/엑셀에서 Lot 컬럼을 추정합니다."""
+    for c in df.columns:
+        ck = norm_key(c).lower()
+        if 'lot' in ck or '로트' in ck:
+            return c
+    return None
+
 def add_excel_row_number(df: pd.DataFrame) -> pd.DataFrame:
     """엑셀 1행이 헤더라고 가정할 때, 데이터 row 번호 = index+2."""
     df = df.copy()
@@ -751,9 +760,42 @@ with tab_ink_in:
     color_groups = sorted(spec_single[cg_col].dropna().unique().tolist()) if cg_col else []
     product_codes = sorted(spec_single[pc_col].dropna().unique().tolist()) if pc_col else []
 
+    # 바인더 Lot 후보: 엑셀(바인더_제조_입고) + 구글시트(바인더 입출고) LOT
     c_blot = find_col(binder_df, "Lot(자동)")
-    binder_lots = binder_df[c_blot].dropna().astype(str).tolist() if c_blot else []
-    binder_lots = sorted(set([x.strip() for x in binder_lots if x.strip()]), reverse=True)
+    binder_lots_excel = binder_df[c_blot].dropna().astype(str).tolist() if c_blot else []
+
+    binder_lots_gsheet: list[str] = []
+    try:
+        df_hema_l = read_gsheet_csv(BINDER_SHEET_ID, BINDER_SHEET_HEMA)
+        df_sil_l = read_gsheet_csv(BINDER_SHEET_ID, BINDER_SHEET_SIL)
+        lot_h = detect_lot_col(df_hema_l)
+        lot_s = detect_lot_col(df_sil_l)
+        if lot_h:
+            binder_lots_gsheet += df_hema_l[lot_h].dropna().astype(str).tolist()
+        if lot_s:
+            binder_lots_gsheet += df_sil_l[lot_s].dropna().astype(str).tolist()
+    except Exception:
+        # 구글시트 접근이 안 되는 환경이면(권한/네트워크) 엑셀 Lot만 사용
+        binder_lots_gsheet = []
+
+    _lots_all = []
+    for x in (binder_lots_excel + binder_lots_gsheet):
+        s = str(x).strip()
+        if not s:
+            continue
+        if s.lower() in ("nan", "none"):
+            continue
+        _lots_all.append(s)
+
+    binder_lots = sorted(set(_lots_all), reverse=True)
+
+    c_refresh, _sp = st.columns([1.4, 8.6])
+    with c_refresh:
+        if st.button("바인더 Lot 최신값으로 갱신", key="btn_refresh_binder_lots"):
+            st.cache_data.clear()
+            st.rerun()
+    with _sp:
+        st.caption("※ '사용된 바인더 Lot' 목록은 엑셀(바인더_제조_입고) + 구글시트(바인더 입출고) LOT를 합쳐 표시합니다. 구글시트를 수정했다면 위 버튼으로 갱신하세요.")
 
     with st.form("single_form", clear_on_submit=True):
         col1, col2, col3, col4 = st.columns([1.2, 1.3, 1.5, 2.0])
