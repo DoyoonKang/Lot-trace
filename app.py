@@ -17,9 +17,8 @@ st.set_page_config(
     layout="wide",
 )
 
-
 # ==========================================================
-# Simple UI Style (임원 보고용 가시성 강화)
+# Simple UI Style (임원/상사 보고용 가시성 강화)
 # ==========================================================
 st.markdown(
     """
@@ -54,7 +53,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
 
 # ==========================================================
 # Google Sheets (Public) Reader
@@ -108,7 +106,7 @@ def norm_key(x) -> str:
     s = re.sub(r"\s+", " ", s)
     return s
 
-def find_col(df: pd.DataFrame, want: str) -> str | None:
+def find_col(df: pd.DataFrame, want: str):
     """df에서 want(줄바꿈/공백 무시)와 동일한 컬럼명을 찾아 반환"""
     w = norm_key(want)
     for c in df.columns:
@@ -217,7 +215,6 @@ def update_sheet_cells(xlsx_path: str, sheet_name: str, updates: list[tuple[int,
             continue
         col = header_map[h]
 
-        # 날짜/시간 처리
         if isinstance(v, pd.Timestamp):
             v = v.to_pydatetime()
         ws.cell(row=int(r), column=int(col)).value = v
@@ -237,7 +234,6 @@ def load_dataframes(xlsx_path: str) -> dict[str, pd.DataFrame]:
         "spec_single": read(SHEET_SPEC_SINGLE),
         "base_lab": read(SHEET_BASE_LAB),
     }
-    # 반환 시트는 없을 수도 있음
     try:
         out["binder_return"] = read(SHEET_BINDER_RETURN)
     except Exception:
@@ -359,7 +355,7 @@ def judge_range(value, lo, hi):
         return "부적합"
     return "적합"
 
-def extract_de76_from_note(note: str | None):
+def extract_de76_from_note(note):
     if not note:
         return None
     m = re.search(r"\[\s*ΔE76\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*\]", str(note))
@@ -433,7 +429,6 @@ def detect_date_col(df: pd.DataFrame):
     return None
 
 def detect_lot_col(df: pd.DataFrame):
-    """구글시트/엑셀에서 Lot 컬럼을 추정합니다."""
     for c in df.columns:
         ck = norm_key(c).lower()
         if 'lot' in ck or '로트' in ck:
@@ -441,13 +436,12 @@ def detect_lot_col(df: pd.DataFrame):
     return None
 
 def add_excel_row_number(df: pd.DataFrame) -> pd.DataFrame:
-    """엑셀 1행이 헤더라고 가정할 때, 데이터 row 번호 = index+2."""
     df = df.copy()
     df["_excel_row"] = df.index + 2
     return df
 
 # ==========================================================
-# Stock (재고/발주/사용량) - 별도 탭
+# Stock (재고/발주/사용량)
 # ==========================================================
 def normalize_color_group(x) -> str:
     if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -456,7 +450,6 @@ def normalize_color_group(x) -> str:
     if not s or s.lower() in ("nan", "none"):
         return "Other"
     u = s.upper()
-    # 한글/영문 혼용 방어
     if "BLACK" in u or "검정" in s or "흑" in s:
         return "Black"
     if "WHITE" in u or "흰" in s or "백" in s:
@@ -471,33 +464,22 @@ def normalize_color_group(x) -> str:
         return "Blue"
     if "PINK" in u or "핑" in s:
         return "Pink"
-    # 이미 표준형이면
     if s in ["Black","White","Red","Yellow","Green","Blue","Pink"]:
         return s
     return "Other"
 
-
 def normalize_product_code(x) -> str:
-    """제품코드/품목명 문자열 정규화 (공백/특수 하이픈/접미어 차이 흡수)"""
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return ""
     s = str(x).strip()
     if not s or s.lower() in ("nan", "none"):
         return ""
-    # 특수 하이픈 → 일반 하이픈
     s = s.replace("–", "-").replace("—", "-").replace("−", "-")
-    # 다중 공백 제거
     s = re.sub(r"\s+", " ", s).strip()
-    # 흔한 접미/접두 제거(필요 시 확장)
     s = s.replace("(액상잉크)", "").replace("액상잉크", "").strip()
     return s
 
 def build_product_to_color_map(spec_single: pd.DataFrame, single_df: pd.DataFrame) -> dict[str, str]:
-    """
-    품목명(=제품코드) -> 색상군 매핑 생성
-    우선순위: Spec_Single_H&S > 단일색_수입검사 기록(빈칸 보정)
-    ※ 제품코드 표기가 조금 달라도 매칭되도록 normalize_product_code 적용
-    """
     mapping: dict[str, str] = {}
 
     sp_pc = find_col(spec_single, "제품코드")
@@ -507,7 +489,6 @@ def build_product_to_color_map(spec_single: pd.DataFrame, single_df: pd.DataFram
         tmp[sp_pc] = tmp[sp_pc].apply(normalize_product_code)
         tmp = tmp[tmp[sp_pc].astype(str).str.len() > 0]
         tmp[sp_cg] = tmp[sp_cg].apply(normalize_color_group)
-        # 제품코드 중복이면 최빈값
         for pc, g in tmp.groupby(sp_pc)[sp_cg]:
             mapping[str(pc)] = g.value_counts().idxmax()
 
@@ -525,7 +506,6 @@ def build_product_to_color_map(spec_single: pd.DataFrame, single_df: pd.DataFram
 
     return mapping
 
-
 def _parse_stock_sheet_date(sheet_name: str, today: dt.date) -> dt.date | None:
     s = str(sheet_name).strip()
     m = re.match(r"^(\d{1,2})\.(\d{1,2})$", s)
@@ -542,10 +522,6 @@ def _parse_stock_sheet_date(sheet_name: str, today: dt.date) -> dt.date | None:
 
 @st.cache_data(show_spinner=False)
 def load_stock_history(stock_xlsx_path: str, product_to_color: dict[str, str]) -> pd.DataFrame:
-    """
-    재고 엑셀(일자별 시트) -> long-form
-    expected cols: 구분, 품목명, 전일 재고(kg), 금일 재고(kg), 하루 사용량(kg)
-    """
     if not stock_xlsx_path or not Path(stock_xlsx_path).exists():
         return pd.DataFrame()
 
@@ -608,11 +584,9 @@ def _donut_chart(df: pd.DataFrame, cat_col: str, val_col: str, title: str):
     ).properties(title=title)
     return base
 
-
 def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df: pd.DataFrame):
     st.markdown('<div class="section-title">📦 액상잉크 재고관리</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">재고(현재) · 발주/입고(기간) · 사용량(일별)을 <b>색상계열</b> 기준으로 요약해 보여드립니다. '
-                '상세 품목(제품코드) 수준은 아래 Expander에서 확인 가능합니다.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">재고(현재) · 발주/입고(기간) · 사용량(일별)을 <b>색상계열</b> 기준으로 요약해 보여드립니다.</div>', unsafe_allow_html=True)
 
     product_to_color = build_product_to_color_map(spec_single, single_df)
     hist = load_stock_history(stock_xlsx_path, product_to_color)
@@ -621,9 +595,6 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
         st.error("재고 엑셀을 읽지 못했습니다. (파일 경로/시트명(예: 1.15)/컬럼명(품목명, 금일 재고(kg), 하루 사용량(kg)) 확인 필요)")
         st.stop()
 
-    # --------------------------
-    # 필터(상단)
-    # --------------------------
     min_d = hist["date"].min().date()
     max_d = hist["date"].max().date()
 
@@ -663,9 +634,6 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
     if sel_div:
         latest_df = latest_df[latest_df["division"].isin(sel_div)].copy()
 
-    # --------------------------
-    # KPI
-    # --------------------------
     total_stock = float(latest_df["curr_stock_kg"].sum())
     total_used = float(hist_f["used_kg"].sum())
     total_inbound = float(hist_f["inbound_kg"].sum())
@@ -680,30 +648,13 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
     k4.metric("기간 발주/입고(건)", f"{inbound_events:,}")
     k5.metric("평균 일 사용량(kg/일)", f"{avg_daily_use:,.1f}")
 
-    st.markdown('<div class="kpi-note">※ 발주/입고(kg/건)는 "하루 사용량"이 음수로 기입된 경우(재고 증가)를 입고로 추정하여 계산합니다.</div>',
+    st.markdown('<div class="kpi-note">※ 발주/입고(kg/건)는 "하루 사용량"이 음수(재고 증가)인 경우를 입고로 추정합니다.</div>',
                 unsafe_allow_html=True)
 
     st.divider()
 
-    # --------------------------
-    # 색상계열 단순화/매핑 상태 체크
-    # --------------------------
-    share_other = (latest_df["color_group"] == "Other").mean() if len(latest_df) else 1.0
-    if share_other > 0.6:
-        st.warning(
-            "⚠️ 제품코드 → 색상군 매핑이 충분히 잡히지 않아 'Other' 비중이 큽니다. "
-            "그래도 아래에 **품목(제품코드) Top 리스트**와 **재고 커버리지(일수)**를 함께 보여드리니 확인 가능합니다."
-        )
-
-    # --------------------------
-    # 요약 차트 (Bar 중심: 한눈에)
-    # --------------------------
-    inv = latest_df.groupby("color_group", as_index=False)["curr_stock_kg"].sum().rename(columns={"curr_stock_kg":"kg"})
-    inv = inv.sort_values("kg", ascending=False)
-
-    use = hist_f.groupby("color_group", as_index=False)["used_kg"].sum().rename(columns={"used_kg":"kg"})
-    use = use.sort_values("kg", ascending=False)
-
+    inv = latest_df.groupby("color_group", as_index=False)["curr_stock_kg"].sum().rename(columns={"curr_stock_kg":"kg"}).sort_values("kg", ascending=False)
+    use = hist_f.groupby("color_group", as_index=False)["used_kg"].sum().rename(columns={"used_kg":"kg"}).sort_values("kg", ascending=False)
     inbound = hist_f.groupby("color_group", as_index=False)["inbound_kg"].sum().rename(columns={"inbound_kg":"kg"})
     inbound = inbound[inbound["kg"] > 0].sort_values("kg", ascending=False)
 
@@ -752,13 +703,10 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
 
     st.divider()
 
-    # --------------------------
-    # 일별 사용량 추이(전체 + 색상계열 선택)
-    # --------------------------
     st.markdown('<div class="section-title">3) 일별 사용량 추이(kg)</div>', unsafe_allow_html=True)
     keys = ["Black","Blue","Green","Yellow","Red","Pink","White","Other"]
     present = [k for k in keys if k in hist_f["color_group"].unique().tolist()]
-    default_keys = [k for k in present if k != "Other"][:5] or present  # 너무 많으면 5개만
+    default_keys = [k for k in present if k != "Other"][:5] or present
     sel_keys = st.multiselect("표시할 색상계열", keys, default=default_keys, key="stock_color_sel")
 
     daily = hist_f[hist_f["color_group"].isin(sel_keys)].groupby(["date","color_group"], as_index=False)["used_kg"].sum()
@@ -784,9 +732,6 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
 
     st.divider()
 
-    # --------------------------
-    # 발주/입고 추이(기간)
-    # --------------------------
     st.markdown('<div class="section-title">4) 발주/입고 추이(기간)</div>', unsafe_allow_html=True)
     if inbound.empty:
         st.info("선택 기간에 발주/입고(재고 증가)로 추정되는 기록이 없습니다.")
@@ -814,19 +759,13 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
 
     st.divider()
 
-    # --------------------------
-    # 재고 커버리지(일수) / 발주 제안(품목 단위)
-    # --------------------------
     st.markdown('<div class="section-title">5) 재고 커버리지(일수) & 발주 제안(품목)</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-sub">현재 재고 ÷ 최근 평균 사용량(kg/일) = 커버리지(일수)로 계산합니다.</div>', unsafe_allow_html=True)
 
     target_days = st.slider("목표 재고 커버리지(일)", min_value=3, max_value=30, value=14, step=1, key="stock_target_days")
     alert_days = st.slider("경보 기준(일)", min_value=1, max_value=21, value=7, step=1, key="stock_alert_days")
 
-    # 평균 사용량(kg/일) 계산: 선택 기간 기반
-    use_by_product = hist_f.groupby("product_code", as_index=False).agg(
-        used_total=("used_kg","sum")
-    )
+    use_by_product = hist_f.groupby("product_code", as_index=False).agg(used_total=("used_kg","sum"))
     use_by_product["avg_daily_use"] = use_by_product["used_total"] / day_span
 
     stock_by_product = latest_df.groupby("product_code", as_index=False).agg(
@@ -843,12 +782,10 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
         axis=1
     )
 
-    # 우선순위: cover_days가 낮은 순 + 사용량 큰 순
     cov2 = cov.copy()
     cov2["_cover_sort"] = cov2["cover_days"].fillna(10**9)
     cov2 = cov2.sort_values(["_cover_sort","avg_daily_use"], ascending=[True, False]).drop(columns=["_cover_sort"])
 
-    # 경보 리스트
     alert_df = cov2[(cov2["cover_days"].notna()) & (cov2["cover_days"] <= float(alert_days))].copy()
     if alert_df.empty:
         st.success("✅ 경보 기준 이하(커버리지 부족) 품목이 없습니다.")
@@ -881,40 +818,45 @@ def render_stock_tab(stock_xlsx_path: str, spec_single: pd.DataFrame, single_df:
         c1, c2 = st.columns(2)
         with c1:
             if len(inv) and inv["kg"].sum() > 0:
-                st.altair_chart(_donut_chart(inv.rename(columns={"kg":"kg"}), "color_group", "kg", "현재 재고(최신일)"), use_container_width=True)
+                st.altair_chart(_donut_chart(inv, "color_group", "kg", "현재 재고(최신일)"), use_container_width=True)
         with c2:
             if len(inbound) and inbound["kg"].sum() > 0:
-                st.altair_chart(_donut_chart(inbound.rename(columns={"kg":"kg"}), "color_group", "kg", "발주/입고(기간합)"), use_container_width=True)
+                st.altair_chart(_donut_chart(inbound, "color_group", "kg", "발주/입고(기간합)"), use_container_width=True)
 
+# ==========================================================
+# Summary (요약) — 이해하기 쉽게 재구성
+# ==========================================================
+def render_summary_tab(stock_xlsx_path: str | None, spec_single: pd.DataFrame, single_df: pd.DataFrame):
+    st.markdown('<div class="section-title">📑 요약</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">최근 30일 기준으로 <b>재고 리스크(커버리지)</b>와 <b>점도 이상(부적합/추세)</b>를 한 페이지로 요약합니다.</div>', unsafe_allow_html=True)
 
+    cA, cB, cC = st.columns([1.4, 1.4, 7.2])
+    with cA:
+        target_days = st.slider("목표 커버리지(일)", 3, 30, 14, 1, key="sum_target_days")
+    with cB:
+        alert_days = st.slider("경보 기준(일)", 1, 21, 7, 1, key="sum_alert_days")
+    with cC:
+        st.caption("※ 커버리지(일)=현재 재고 ÷ 최근 평균 사용량(kg/일). 사용량이 0이면 커버리지가 계산되지 않습니다.")
 
-def render_exec_summary_tab(
-    stock_xlsx_path: str | None,
-    spec_single: pd.DataFrame,
-    single_df: pd.DataFrame,
-):
-    """임원/보고용 1페이지 요약"""
-    st.markdown('<div class="section-title">📑 임원 요약 (재고 · 점도)</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-sub">상사/타부서가 봐도 “재고는 이렇게 관리하고, 점도는 이렇게 추이 관리한다”가 한눈에 보이도록 구성했습니다.</div>',
-        unsafe_allow_html=True
-    )
+    st.divider()
 
-    # ==========================================================
+    # -----------------------------
     # A) 재고 요약
-    # ==========================================================
-    st.markdown('<div class="section-title">A) 재고/발주/사용량 요약</div>', unsafe_allow_html=True)
+    # -----------------------------
+    st.markdown("### A) 재고(커버리지)")
 
-    if stock_xlsx_path and Path(stock_xlsx_path).exists():
+    stock_ok = bool(stock_xlsx_path and Path(stock_xlsx_path).exists())
+    if not stock_ok:
+        st.info("재고 파일이 설정되지 않았습니다. (좌측 사이드바에서 재고 엑셀 경로/업로드 설정)")
+    else:
         product_to_color = build_product_to_color_map(spec_single, single_df)
         hist = load_stock_history(stock_xlsx_path, product_to_color)
 
         if hist.empty:
-            st.info("재고 파일을 읽었지만 데이터가 비어 있습니다.")
+            st.warning("재고 파일은 읽혔지만 데이터가 비어 있습니다. (시트명/컬럼명 확인: 품목명, 금일 재고(kg), 하루 사용량(kg))")
         else:
-            max_d = hist["date"].max().date()
-            start = max(hist["date"].min().date(), max_d - dt.timedelta(days=29))
-            end = max_d
+            end = hist["date"].max().date()
+            start = max(hist["date"].min().date(), end - dt.timedelta(days=29))
             day_span = max(1, (end - start).days + 1)
 
             hist_f = hist[(hist["date"].dt.date >= start) & (hist["date"].dt.date <= end)].copy()
@@ -923,100 +865,97 @@ def render_exec_summary_tab(
             total_stock = float(latest_df["curr_stock_kg"].sum())
             total_used = float(hist_f["used_kg"].sum())
             inbound_events = int(hist_f["inbound_event"].sum())
-            avg_daily_use = total_used / day_span if day_span else 0.0
+            avg_daily_use_total = (total_used / day_span) if day_span else 0.0
 
-            k1, k2, k3, k4, k5 = st.columns([1.2, 1.5, 1.6, 1.4, 1.8])
+            k1, k2, k3, k4, k5 = st.columns([1.2, 1.5, 1.5, 1.3, 1.8])
             k1.metric("재고 최신일", end.isoformat())
             k2.metric("현재 총 재고(kg)", f"{total_stock:,.1f}")
             k3.metric("최근 30일 사용량(kg)", f"{total_used:,.1f}")
             k4.metric("최근 30일 입고(건)", f"{inbound_events:,}")
-            k5.metric("평균 사용량(kg/일)", f"{avg_daily_use:,.1f}")
+            k5.metric("평균 사용량(kg/일)", f"{avg_daily_use_total:,.1f}")
 
-            inv = (
-                latest_df.groupby("color_group", as_index=False)["curr_stock_kg"]
-                .sum()
-                .rename(columns={"curr_stock_kg": "kg"})
-                .sort_values("kg", ascending=False)
+            use_by_product = hist_f.groupby("product_code", as_index=False).agg(used_total=("used_kg","sum"))
+            use_by_product["avg_daily_use"] = use_by_product["used_total"] / day_span
+
+            stock_by_product = latest_df.groupby("product_code", as_index=False).agg(
+                stock_kg=("curr_stock_kg","sum"),
+                color_group=("color_group", lambda x: x.value_counts().idxmax() if len(x) else "Other"),
+                division=("division", lambda x: x.value_counts().idxmax() if len(x) else ""),
             )
-            use = (
-                hist_f.groupby("color_group", as_index=False)["used_kg"]
-                .sum()
-                .rename(columns={"used_kg": "kg"})
-                .sort_values("kg", ascending=False)
+
+            cov = stock_by_product.merge(use_by_product[["product_code","avg_daily_use"]], on="product_code", how="left")
+            cov["avg_daily_use"] = cov["avg_daily_use"].fillna(0.0)
+            cov["cover_days"] = cov.apply(lambda r: (r["stock_kg"] / r["avg_daily_use"]) if r["avg_daily_use"] > 0 else None, axis=1)
+            cov["need_order_kg"] = cov.apply(
+                lambda r: max(0.0, target_days * r["avg_daily_use"] - r["stock_kg"]) if r["avg_daily_use"] > 0 else None,
+                axis=1
             )
+
+            alert_df = cov[(cov["cover_days"].notna()) & (cov["cover_days"] <= float(alert_days))].copy()
+            if len(alert_df):
+                worst = alert_df.sort_values("cover_days").iloc[0]
+                st.warning(f"⚠️ 커버리지 {alert_days}일 이하 품목: **{len(alert_df):,}개** (최저: {worst['product_code']} / {worst['cover_days']:.1f}일)")
+            else:
+                st.success(f"✅ 커버리지 {alert_days}일 이하 품목 없음")
+
+            inv = (latest_df.groupby("color_group", as_index=False)["curr_stock_kg"].sum()
+                   .rename(columns={"curr_stock_kg":"kg"}).sort_values("kg", ascending=False))
+            use = (hist_f.groupby("color_group", as_index=False)["used_kg"].sum()
+                   .rename(columns={"used_kg":"kg"}).sort_values("kg", ascending=False))
 
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**현재 재고(색상계열)**")
-                ch = alt.Chart(inv).mark_bar().encode(
-                    y=alt.Y("color_group:N", sort="-x", title=""),
-                    x=alt.X("kg:Q", title="재고(kg)"),
-                    color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=None),
-                    tooltip=[
-                        alt.Tooltip("color_group:N", title="색상계열"),
-                        alt.Tooltip("kg:Q", title="재고(kg)", format=",.1f"),
-                    ],
-                ).properties(height=220)
-                st.altair_chart(ch, use_container_width=True)
-
+                st.altair_chart(
+                    alt.Chart(inv).mark_bar().encode(
+                        y=alt.Y("color_group:N", sort="-x", title=""),
+                        x=alt.X("kg:Q", title="재고(kg)"),
+                        color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=None),
+                        tooltip=[alt.Tooltip("color_group:N", title="색상계열"),
+                                 alt.Tooltip("kg:Q", title="재고(kg)", format=",.1f")]
+                    ).properties(height=220),
+                    use_container_width=True
+                )
             with c2:
                 st.markdown("**최근 30일 사용량(색상계열)**")
-                ch2 = alt.Chart(use).mark_bar().encode(
-                    y=alt.Y("color_group:N", sort="-x", title=""),
-                    x=alt.X("kg:Q", title="사용량(kg)"),
-                    color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=None),
-                    tooltip=[
-                        alt.Tooltip("color_group:N", title="색상계열"),
-                        alt.Tooltip("kg:Q", title="사용량(kg)", format=",.1f"),
-                    ],
-                ).properties(height=220)
-                st.altair_chart(ch2, use_container_width=True)
+                st.altair_chart(
+                    alt.Chart(use).mark_bar().encode(
+                        y=alt.Y("color_group:N", sort="-x", title=""),
+                        x=alt.X("kg:Q", title="사용량(kg)"),
+                        color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=None),
+                        tooltip=[alt.Tooltip("color_group:N", title="색상계열"),
+                                 alt.Tooltip("kg:Q", title="사용량(kg)", format=",.1f")]
+                    ).properties(height=220),
+                    use_container_width=True
+                )
 
-            # 커버리지 경보 Top8
-            use_by_product = hist_f.groupby("product_code", as_index=False)["used_kg"].sum()
-            use_by_product["avg_daily_use"] = use_by_product["used_kg"] / day_span
-
-            stock_by_product = (
-                latest_df.groupby("product_code", as_index=False)["curr_stock_kg"]
-                .sum()
-                .rename(columns={"curr_stock_kg": "stock_kg"})
-            )
-
-            cov = stock_by_product.merge(use_by_product[["product_code", "avg_daily_use"]], on="product_code", how="left")
-            cov["cover_days"] = cov.apply(
-                lambda r: (r["stock_kg"] / r["avg_daily_use"]) if (r["avg_daily_use"] and r["avg_daily_use"] > 0) else None,
-                axis=1,
-            )
-            cov2 = cov[cov["cover_days"].notna()].sort_values("cover_days").head(8)
-            if len(cov2):
-                st.markdown("**재고 커버리지(일수) 경보 Top8 (낮은 순)**")
-                show = cov2.copy()
+            st.markdown("**커버리지 경보 Top 15**")
+            if len(alert_df) == 0:
+                st.info("표시할 경보 품목이 없습니다.")
+            else:
+                show = alert_df.sort_values(["cover_days","avg_daily_use"], ascending=[True, False]).copy()
+                show = show[["division","product_code","color_group","stock_kg","avg_daily_use","cover_days","need_order_kg"]].head(15)
+                show["상태"] = show["cover_days"].apply(lambda v: "🚨" if (v is not None and v <= float(alert_days)) else "⚠️")
                 show["stock_kg"] = show["stock_kg"].round(1)
                 show["avg_daily_use"] = show["avg_daily_use"].round(2)
                 show["cover_days"] = show["cover_days"].round(1)
+                show["need_order_kg"] = show["need_order_kg"].round(1)
                 st.dataframe(
-                    show.rename(
-                        columns={
-                            "product_code": "제품코드",
-                            "stock_kg": "재고(kg)",
-                            "avg_daily_use": "일평균사용(kg)",
-                            "cover_days": "커버리지(일)",
-                        }
-                    ),
+                    show.rename(columns={
+                        "division":"구분","product_code":"제품코드","color_group":"색상계열",
+                        "stock_kg":"재고(kg)","avg_daily_use":"일평균사용(kg)",
+                        "cover_days":"커버리지(일)","need_order_kg":"목표까지 필요발주(kg)"
+                    }),
                     use_container_width=True,
-                    height=260,
+                    height=360
                 )
-            else:
-                st.info("커버리지 계산에 필요한 사용량 데이터가 부족합니다.")
-    else:
-        st.info("재고 파일이 설정되지 않았습니다. (좌측 사이드바에서 재고 엑셀 경로/업로드를 설정해 주세요.)")
 
     st.divider()
 
-    # ==========================================================
+    # -----------------------------
     # B) 점도 요약
-    # ==========================================================
-    st.markdown('<div class="section-title">B) 점도 관리 요약</div>', unsafe_allow_html=True)
+    # -----------------------------
+    st.markdown("### B) 점도(부적합/추세)")
 
     c_s_date = find_col(single_df, "입고일")
     c_s_visc = find_col(single_df, "점도측정값(cP)")
@@ -1044,7 +983,6 @@ def render_exec_summary_tab(
     ng = int((df30[c_s_judge] == "부적합").sum()) if c_s_judge and c_s_judge in df30.columns else 0
     ng_rate = (ng / total * 100) if total else 0.0
 
-    # 최근 7일 vs 이전 7일 평균 변화(추세)
     last7_start = max_d - dt.timedelta(days=6)
     prev7_start = max_d - dt.timedelta(days=13)
     prev7_end = max_d - dt.timedelta(days=7)
@@ -1055,7 +993,7 @@ def render_exec_summary_tab(
     prev7_mean = float(prev7.mean()) if len(prev7) else None
     delta = (last7_mean - prev7_mean) if (last7_mean is not None and prev7_mean is not None) else None
 
-    k1, k2, k3, k4 = st.columns([1.5, 1.2, 1.3, 2.0])
+    k1, k2, k3, k4 = st.columns([1.6, 1.2, 1.3, 2.0])
     k1.metric("최근 30일 점도 측정(건)", f"{total:,}")
     k2.metric("부적합(건)", f"{ng:,}")
     k3.metric("부적합률(%)", f"{ng_rate:.1f}")
@@ -1064,7 +1002,6 @@ def render_exec_summary_tab(
     else:
         k4.metric("최근 7일 평균점도 변화", f"{last7_mean:,.0f} cP", delta=f"{delta:,.0f} cP")
 
-    # 일별 평균점도 + 부적합건수
     daily = (
         df30.groupby(df30[c_s_date].dt.date)
         .agg(mean_visc=("_점도", "mean"), cnt=("_점도", "size"))
@@ -1090,28 +1027,32 @@ def render_exec_summary_tab(
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**일별 평균 점도(최근 30일)**")
-        ch = alt.Chart(daily).mark_line(point=True).encode(
-            x=alt.X("date:T", title="날짜"),
-            y=alt.Y("mean_visc:Q", title="평균 점도(cP)"),
-            tooltip=[
-                alt.Tooltip("date:T", title="날짜"),
-                alt.Tooltip("mean_visc:Q", title="평균점도", format=",.0f"),
-                alt.Tooltip("cnt:Q", title="측정(건)", format=",.0f"),
-            ],
-        ).properties(height=220)
-        st.altair_chart(ch, use_container_width=True)
+        st.altair_chart(
+            alt.Chart(daily).mark_line(point=True).encode(
+                x=alt.X("date:T", title="날짜"),
+                y=alt.Y("mean_visc:Q", title="평균 점도(cP)"),
+                tooltip=[
+                    alt.Tooltip("date:T", title="날짜"),
+                    alt.Tooltip("mean_visc:Q", title="평균점도", format=",.0f"),
+                    alt.Tooltip("cnt:Q", title="측정(건)", format=",.0f"),
+                ],
+            ).properties(height=220),
+            use_container_width=True
+        )
 
     with c2:
         st.markdown("**부적합 건수(최근 30일)**")
-        ch2 = alt.Chart(daily).mark_bar().encode(
-            x=alt.X("date:T", title="날짜"),
-            y=alt.Y("ng_cnt:Q", title="부적합(건)"),
-            tooltip=[
-                alt.Tooltip("date:T", title="날짜"),
-                alt.Tooltip("ng_cnt:Q", title="부적합(건)", format=",.0f"),
-            ],
-        ).properties(height=220)
-        st.altair_chart(ch2, use_container_width=True)
+        st.altair_chart(
+            alt.Chart(daily).mark_bar().encode(
+                x=alt.X("date:T", title="날짜"),
+                y=alt.Y("ng_cnt:Q", title="부적합(건)"),
+                tooltip=[
+                    alt.Tooltip("date:T", title="날짜"),
+                    alt.Tooltip("ng_cnt:Q", title="부적합(건)", format=",.0f"),
+                ],
+            ).properties(height=220),
+            use_container_width=True
+        )
 
     if c_s_judge and c_s_judge in df30.columns:
         top_ng = (
@@ -1123,21 +1064,14 @@ def render_exec_summary_tab(
             .head(10)
         )
         if len(top_ng):
-            st.markdown("**제품코드 부적합 Top10(최근 30일)**")
-            st.dataframe(
-                top_ng.rename(columns={c_s_pc: "제품코드", "ng_cnt": "부적합(건)"}),
-                use_container_width=True,
-                height=280,
-            )
-
-    st.info("보고 포인트: ① 재고 최신일/총재고/최근30일 사용량 ② 커버리지 부족 Top 품목 ③ 점도 부적합률 및 최근 추세 ④ 부적합 Top 제품코드")
-
+            st.markdown("**부적합 Top10 제품코드(최근 30일)**")
+            st.dataframe(top_ng.rename(columns={c_s_pc: "제품코드", "ng_cnt": "부적합(건)"}), use_container_width=True, height=320)
 
 # ==========================================================
 # UI Header
 # ==========================================================
 st.title("액상 잉크 Lot 추적 관리 대시보드")
-st.caption("✅ 대시보드(목록/평균/추이)  |  ✅ 잉크 입고(엑셀 누적)  |  ✅ 바인더 입출고(구글시트 최신순)  |  ✅ 반품(kg) 기록  |  ✅ 빠른검색/수정  |  ✅ 재고관리(재고/발주/사용량)")
+st.caption("✅ 대시보드  |  ✅ 요약  |  ✅ 재고관리(재고/발주/사용량)  |  ✅ 잉크 입고(엑셀 누적)  |  ✅ 바인더 입출고(구글시트 최신순)  |  ✅ 반품(kg) 기록  |  ✅ 빠른검색/수정")
 
 # ==========================================================
 # Data file selection
@@ -1152,7 +1086,7 @@ with st.sidebar:
     stock_xlsx_path = st.text_input("재고 엑셀 파일 경로", value=DEFAULT_STOCK_XLSX, key="stock_path")
     uploaded_stock = st.file_uploader("또는 재고 엑셀 업로드", type=["xlsx"], key="stock_upload")
 
-# 업로드 파일은 "처음 1회만" tmp로 복사 (저장한 내용이 rerun 때 덮어써지는 문제 방지)
+# 업로드 파일은 "처음 1회만" tmp로 복사
 if uploaded is not None:
     upload_sig = f"{uploaded.name}:{uploaded.size}"
     if st.session_state.get("_uploaded_sig") != upload_sig:
@@ -1177,7 +1111,6 @@ if not Path(xlsx_path).exists():
     st.error(f"엑셀 파일을 찾을 수 없습니다: {xlsx_path}")
     st.stop()
 
-# 반환 시트 없으면 생성
 ensure_sheet_exists(
     xlsx_path,
     SHEET_BINDER_RETURN,
@@ -1192,43 +1125,33 @@ spec_single = data["spec_single"].copy()
 base_lab = data["base_lab"].copy()
 binder_return_df = data["binder_return"].copy()
 
-# 컬럼 참조(실제 이름)
 c_b_date = find_col(binder_df, "제조/입고일")
 c_s_date = find_col(single_df, "입고일")
 
-# 날짜 정리
 if c_b_date:
     binder_df[c_b_date] = binder_df[c_b_date].apply(normalize_date)
 if c_s_date:
     single_df[c_s_date] = single_df[c_s_date].apply(normalize_date)
 
-# 대시보드 파생
 c_s_visc = find_col(single_df, "점도측정값(cP)")
 c_s_lot = find_col(single_df, "단일색잉크 Lot")
 c_s_blot = find_col(single_df, "사용된 바인더 Lot")
 c_s_cg = find_col(single_df, "색상군")
 c_s_pc = find_col(single_df, "제품코드")
 
-# ΔE76
 single_df["_ΔE76"] = compute_de76_series(single_df, base_lab)
 
-# tabs (✅ 재고 탭 추가)
-tab_exec, tab_dash, tab_stock, tab_ink_in, tab_binder, tab_search = st.tabs(
-    ["📑 임원 요약", "📊 대시보드", "📦 액상잉크 재고관리", "✍️ 잉크 입고", "📦 바인더 입출고", "🔎 빠른검색/수정"]
+# ==========================================================
+# Tabs (대시보드가 1번)
+# ==========================================================
+tab_dash, tab_summary, tab_stock, tab_ink_in, tab_binder, tab_search = st.tabs(
+    ["📊 대시보드", "📑 요약", "📦 액상잉크 재고관리", "✍️ 잉크 입고", "📦 바인더 입출고", "🔎 빠른검색/수정"]
 )
-
-
-# ==========================================================
-# Executive Summary (임원 요약)
-# ==========================================================
-with tab_exec:
-    render_exec_summary_tab(stock_xlsx_path, spec_single, single_df)
 
 # ==========================================================
 # Dashboard
 # ==========================================================
 with tab_dash:
-    # KPI
     b_total = len(binder_df)
     s_total = len(single_df)
     c_b_judge = find_col(binder_df, "판정")
@@ -1244,8 +1167,7 @@ with tab_dash:
 
     st.divider()
 
-    # 1) 목록(엑셀형)
-    st.subheader("1) 단일색 데이터 목록 (엑셀형)")
+    st.subheader("단일색 데이터 목록 (엑셀형)")
     need = [c_s_date, c_s_cg, c_s_pc, c_s_blot, c_s_visc]
     if any(c is None for c in need):
         st.warning("단일색 시트에서 필요한 컬럼을 찾지 못했습니다. (입고일/색상군/제품코드/사용된 바인더 Lot/점도측정값)")
@@ -1276,19 +1198,19 @@ with tab_dash:
             df_list = df_list[df_list[c_s_pc].isin(pc)]
 
         view = pd.DataFrame({
-            "제조일자": df_list[c_s_date].dt.date,
+            "입고일": df_list[c_s_date].dt.date,
             "색상군": df_list[c_s_cg] if c_s_cg else None,
             "제품코드": df_list[c_s_pc] if c_s_pc else None,
             "사용된바인더": df_list[c_s_blot] if c_s_blot else None,
             "점도(cP)": pd.to_numeric(df_list[c_s_visc].astype(str).str.replace(",", "", regex=False), errors="coerce") if c_s_visc else None,
             "색차(ΔE76)": df_list["_ΔE76"],
-        }).dropna(subset=["제조일자"]).sort_values(by="제조일자", ascending=False)
+        }).dropna(subset=["입고일"]).sort_values(by="입고일", ascending=False)
 
         st.dataframe(view, use_container_width=True, height=320)
 
         st.divider()
 
-        st.subheader("1-1) 색상군별 평균 점도 (점 + 값)")
+        st.subheader("색상군별 평균 점도 (점 + 값)")
         mean_df = (
             view.dropna(subset=["색상군", "점도(cP)"])
             .groupby("색상군", as_index=False)["점도(cP)"]
@@ -1310,9 +1232,8 @@ with tab_dash:
 
     st.divider()
 
-    # 3) 제품(단일색)별 트렌드 + 스펙선 + 스펙 수정
-    st.subheader("3) 제품별 점도 트랜드")
-    st.caption("제품코드 기준 점도 추이 + 스펙 상/하한(빨간선) 표시, 그리고 스펙 값은 대시보드에서 바로 수정 가능합니다.")
+    st.subheader("제품별 점도 트랜드")
+    st.caption("제품코드 기준 점도 추이 + 스펙 상/하한(빨간선). 스펙 값은 여기서 바로 수정 가능합니다.")
 
     if not all([c_s_date, c_s_visc, c_s_pc]):
         st.info("제품별 트렌드를 만들기 위해서는 단일색 시트에 입고일/점도측정값/제품코드 컬럼이 필요합니다.")
@@ -1348,7 +1269,6 @@ with tab_dash:
             if c_s_cg and cg_val and cg_val != "(전체)":
                 dfp2 = dfp2[dfp2[c_s_cg] == cg_val]
 
-            # 스펙 조회
             c_sp_cg = find_col(spec_single, "색상군")
             c_sp_pc = find_col(spec_single, "제품코드")
             c_sp_bt = find_col(spec_single, "BinderType")
@@ -1375,7 +1295,6 @@ with tab_dash:
                     spec_hi = safe_to_float(hit.iloc[0][c_sp_hi])
                     spec_row_excel = int(hit.index[0]) + 2
 
-            # 차트
             if len(dfp2) == 0:
                 st.info("선택 조건에 해당하는 데이터가 없습니다.")
             else:
@@ -1393,19 +1312,15 @@ with tab_dash:
 
                 layers = [line, pts, lbl]
 
-                # 스펙선(빨간선)
                 if spec_lo is not None:
                     lo_df = pd.DataFrame({"y": [spec_lo]})
-                    lo_rule = alt.Chart(lo_df).mark_rule(color="red").encode(y="y:Q")
-                    layers.append(lo_rule)
+                    layers.append(alt.Chart(lo_df).mark_rule(color="red").encode(y="y:Q"))
                 if spec_hi is not None:
                     hi_df = pd.DataFrame({"y": [spec_hi]})
-                    hi_rule = alt.Chart(hi_df).mark_rule(color="red").encode(y="y:Q")
-                    layers.append(hi_rule)
+                    layers.append(alt.Chart(hi_df).mark_rule(color="red").encode(y="y:Q"))
 
                 st.altair_chart(alt.layer(*layers).interactive(), use_container_width=True)
 
-            # 스펙 수정 UI
             with st.expander("스펙 상/하한 수정(Excel: Spec_Single_H&S)"):
                 if spec_row_excel is None:
                     st.info("현재 선택 조건으로 Spec_Single_H&S에서 스펙 행을 찾지 못했습니다. (제품코드/색상군/BinderType 매칭 확인)")
@@ -1424,7 +1339,7 @@ with tab_dash:
                             updates.append((spec_row_excel, c_sp_hi, float(new_hi)))
                         try:
                             update_sheet_cells(xlsx_path, SHEET_SPEC_SINGLE, updates)
-                            st.success("스펙 저장 완료! (다시 계산/표시됩니다)")
+                            st.success("스펙 저장 완료! (즉시 반영됩니다)")
                             st.cache_data.clear()
                             st.rerun()
                         except Exception as e:
@@ -1440,7 +1355,7 @@ with tab_dash:
     st.dataframe(show.head(20), use_container_width=True)
 
     with st.expander("최근 데이터(단일색) 수정하기 (최대 50건)"):
-        st.caption("실수로 입력된 값이 있으면 여기서 바로 수정 → '변경사항 저장'을 누르시면 엑셀에 반영됩니다.")
+        st.caption("실수로 입력된 값이 있으면 여기서 바로 수정 → '변경사항 저장'을 누르면 엑셀에 반영됩니다.")
         if len(single_df) == 0:
             st.info("단일색 데이터가 없습니다.")
         else:
@@ -1486,6 +1401,12 @@ with tab_dash:
                         st.error(f"저장 실패: {e}")
 
 # ==========================================================
+# Summary Tab
+# ==========================================================
+with tab_summary:
+    render_summary_tab(stock_xlsx_path, spec_single, single_df)
+
+# ==========================================================
 # Stock Tab
 # ==========================================================
 with tab_stock:
@@ -1511,7 +1432,6 @@ with tab_ink_in:
     color_groups = sorted(spec_single[cg_col].dropna().unique().tolist()) if cg_col else []
     product_codes = sorted(spec_single[pc_col].dropna().unique().tolist()) if pc_col else []
 
-    # 바인더 Lot 후보: 엑셀(바인더_제조_입고) + 구글시트(바인더 입출고) LOT
     c_blot = find_col(binder_df, "Lot(자동)")
     binder_lots_excel = binder_df[c_blot].dropna().astype(str).tolist() if c_blot else []
 
@@ -1545,7 +1465,7 @@ with tab_ink_in:
             st.cache_data.clear()
             st.rerun()
     with _sp:
-        st.caption("※ '사용된 바인더 Lot' 목록은 엑셀(바인더_제조_입고) + 구글시트(바인더 입출고) LOT를 합쳐 표시합니다. 구글시트를 수정했다면 위 버튼으로 갱신하세요.")
+        st.caption("※ '사용된 바인더 Lot' 목록은 엑셀(바인더_제조_입고) + 구글시트(바인더 입출고) LOT를 합쳐 표시합니다.")
 
     with st.form("single_form", clear_on_submit=True):
         col1, col2, col3, col4 = st.columns([1.2, 1.3, 1.5, 2.0])
@@ -1687,140 +1607,6 @@ with tab_binder:
                 st.error(f"반품 저장 실패: {e}")
 
     st.divider()
-    st.subheader("바인더 입력 (제조/입고) — 여러 날짜/수량 묶음 입력 지원")
-
-    input_mode = st.radio("입력 방식", ["개별 입력", "묶음 입력(여러 날짜/수량)"], horizontal=True, key="binder_input_mode")
-
-    if input_mode == "개별 입력":
-        with st.form("binder_form_single", clear_on_submit=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                mfg_date = st.date_input("제조/입고일", value=dt.date.today(), key="b_single_date")
-                b_name = st.selectbox("바인더명", binder_names, key="b_single_name") if binder_names else st.text_input("바인더명", key="b_single_name_text")
-            with col2:
-                visc = st.number_input("점도(cP)", min_value=0.0, step=1.0, format="%.1f", key="b_single_visc")
-                uv = st.number_input("UV흡광도(선택)", min_value=0.0, step=0.01, format="%.3f", key="b_single_uv")
-                uv_enabled = st.checkbox("UV 값 입력함", value=False, key="b_single_uv_en")
-            with col3:
-                note = st.text_input("비고", value="", key="b_single_note")
-                submit_b = st.form_submit_button("저장(바인더)")
-
-        if submit_b:
-            visc_lo, visc_hi, uv_hi, _ = get_binder_limits(spec_binder, b_name)
-            lot = generate_binder_lot(spec_binder, b_name, mfg_date, binder_df.get(blot_col, pd.Series(dtype=str)) if blot_col else pd.Series(dtype=str))
-
-            judge_v = judge_range(visc, visc_lo, visc_hi)
-            judge_u = judge_range(uv if uv_enabled else None, None, uv_hi)
-            judge = "부적합" if (judge_v == "부적합" or judge_u == "부적합") else "적합"
-
-            row = {
-                "제조/입고일": mfg_date,
-                "바인더명": b_name,
-                "Lot(자동)": lot,
-                "점도(cP)": float(visc),
-                "UV흡광도(선택)": float(uv) if uv_enabled else None,
-                "판정": judge,
-                "비고": note,
-            }
-            try:
-                append_row_to_sheet(xlsx_path, SHEET_BINDER, row)
-                st.success(f"저장 완료! 바인더 Lot = {lot}")
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as e:
-                st.error(f"저장 실패: {e}")
-    else:
-        st.caption("표에 날짜/바인더명/수량(통)/점도/UV/비고를 입력하고, 한 번에 저장합니다.")
-        base_rows = st.session_state.get("binder_batch_rows")
-        if base_rows is None:
-            d0 = dt.date.today()
-            first_name = binder_names[0] if binder_names else ""
-            base_rows = [
-                {"제조/입고일": d0, "바인더명": first_name, "수량(통)": 8, "점도(cP)": 0.0, "UV입력": False, "UV흡광도(선택)": None, "비고": ""},
-                {"제조/입고일": d0 - dt.timedelta(days=1), "바인더명": first_name, "수량(통)": 8, "점도(cP)": 0.0, "UV입력": False, "UV흡광도(선택)": None, "비고": ""},
-            ]
-        edit_df = st.data_editor(pd.DataFrame(base_rows), use_container_width=True, num_rows="dynamic", key="binder_batch_editor")
-        submit_batch = st.button("묶음 저장(바인더)", type="primary", key="binder_batch_submit")
-
-        if submit_batch:
-            tmp = edit_df.copy()
-            tmp["제조/입고일"] = tmp["제조/입고일"].apply(normalize_date)
-            tmp["수량(통)"] = pd.to_numeric(tmp["수량(통)"], errors="coerce").fillna(0).astype(int)
-            tmp["점도(cP)"] = pd.to_numeric(tmp["점도(cP)"].astype(str).str.replace(",", "", regex=False), errors="coerce")
-            tmp = tmp.dropna(subset=["제조/입고일", "바인더명", "점도(cP)"])
-            tmp = tmp[tmp["수량(통)"] > 0]
-            if len(tmp) == 0:
-                st.error("저장할 행이 없습니다. (날짜/바인더명/수량/점도 입력 확인)")
-                st.stop()
-
-            existing = binder_df.get(blot_col, pd.Series(dtype=str)) if blot_col else pd.Series(dtype=str)
-            existing_list = existing.dropna().astype(str).tolist()
-            seq_counters = {}
-            rows_out = []
-
-            tmp = tmp.sort_values(by="제조/입고일")
-            for _, r in tmp.iterrows():
-                mfg_date = r["제조/입고일"]
-                b_name = str(r["바인더명"]).strip()
-                qty = int(r["수량(통)"])
-                visc = safe_to_float(r["점도(cP)"])
-                uv_enabled = bool(r.get("UV입력", False))
-                uv_val = safe_to_float(r.get("UV흡광도(선택)", None)) if uv_enabled else None
-                note = str(r.get("비고", "")).strip()
-
-                visc_lo, visc_hi, uv_hi, rule = get_binder_limits(spec_binder, b_name)
-                m = re.match(r"^([A-Za-z0-9]+)\+YYYYMMDD(-##)?$", str(rule).strip()) if rule else None
-                if not m:
-                    st.error(f"[{b_name}] Lot부여규칙을 해석할 수 없습니다. (Spec_Binder 확인 필요)")
-                    st.stop()
-
-                prefix = m.group(1)
-                has_seq = bool(m.group(2))
-                date_str = mfg_date.strftime("%Y%m%d")
-
-                if (not has_seq) and qty > 1:
-                    st.error(f"[{b_name}] Lot부여규칙에 순번(-##)이 없어 여러 통(수량={qty})을 자동 생성할 수 없습니다.")
-                    st.stop()
-
-                key = (prefix, date_str)
-                if key not in seq_counters:
-                    seq_counters[key] = next_seq_for_pattern(pd.Series(existing_list), prefix, date_str, sep="-")
-
-                for _i in range(qty):
-                    if has_seq:
-                        seq = seq_counters[key]
-                        seq_counters[key] += 1
-                        lot = f"{prefix}{date_str}-{seq:02d}"
-                    else:
-                        lot = f"{prefix}{date_str}"
-
-                    judge_v = judge_range(visc, visc_lo, visc_hi)
-                    judge_u = judge_range(uv_val, None, uv_hi) if uv_enabled else None
-                    judge = "부적합" if (judge_v == "부적합" or judge_u == "부적합") else "적합"
-
-                    rows_out.append({
-                        "제조/입고일": mfg_date,
-                        "바인더명": b_name,
-                        "Lot(자동)": lot,
-                        "점도(cP)": float(visc) if visc is not None else None,
-                        "UV흡광도(선택)": float(uv_val) if uv_enabled and uv_val is not None else None,
-                        "판정": judge,
-                        "비고": note,
-                    })
-                    existing_list.append(lot)
-
-            st.write("저장 미리보기(상위 50건)")
-            st.dataframe(pd.DataFrame(rows_out).tail(50), use_container_width=True)
-
-            try:
-                append_rows_to_sheet(xlsx_path, SHEET_BINDER, rows_out)
-                st.success(f"묶음 저장 완료! 총 {len(rows_out)}건 입력했습니다.")
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as e:
-                st.error(f"저장 실패: {e}")
-
-    st.divider()
     st.subheader("바인더 입출고 (Google Sheets 자동 반영, 최신순)")
     st.caption("구글 시트를 수정하면 이 화면은 새로고침 시 자동 반영됩니다. (캐시 60초)")
 
@@ -1869,12 +1655,10 @@ with tab_search:
         st.write("")
         st.caption("💡 바인더 Lot 검색: 바인더 정보 + 해당 Lot를 사용한 단일색 잉크 목록")
 
-    # 단일색 검색용 df
     s_df = single_df.copy()
     if c_s_date:
         s_df[c_s_date] = pd.to_datetime(s_df[c_s_date], errors="coerce")
 
-    # 바인더 검색용 df
     b_df = binder_df.copy()
     if c_b_date:
         b_df[c_b_date] = pd.to_datetime(b_df[c_b_date], errors="coerce")
