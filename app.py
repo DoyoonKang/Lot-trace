@@ -13,6 +13,14 @@ from openpyxl import load_workbook
 # ==========================================================
 st.set_page_config(page_title="액상 잉크 Lot 추적 관리", page_icon="🧪", layout="wide")
 
+# 저장 후 rerun 시 토스트 메시지
+if st.session_state.get("_toast_msg"):
+    try:
+        st.toast(st.session_state["_toast_msg"])
+    except Exception:
+        pass
+    st.session_state["_toast_msg"] = None
+
 st.markdown(
     """
     <style>
@@ -62,20 +70,6 @@ def find_col(df: pd.DataFrame, want: str):
             return c
     return None
 
-def safe_to_float(x):
-    if x is None:
-        return None
-    if isinstance(x, float) and pd.isna(x):
-        return None
-    if isinstance(x, str) and x.strip() == "":
-        return None
-    try:
-        if isinstance(x, str):
-            x = x.replace(",", "")
-        return float(x)
-    except Exception:
-        return None
-
 def normalize_date(x):
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return None
@@ -111,6 +105,136 @@ def detect_date_col(df: pd.DataFrame):
         if any(k in ck.lower() for k in ["일자", "날짜", "date", "입고일", "출고일"]):
             return c
     return None
+
+# ==========================================================
+# Excel append / download
+# ==========================================================
+def get_sheet_headers(xlsx_path: str, sheet_name: str) -> list[str]:
+    wb = load_workbook(xlsx_path)
+    if sheet_name not in wb.sheetnames:
+        return []
+    ws = wb[sheet_name]
+    headers = []
+    for cell in ws[1]:
+        if cell.value is None:
+            headers.append(None)
+        else:
+            headers.append(str(cell.value).strip())
+    # 뒤쪽 None 꼬리 제거
+    while headers and headers[-1] in (None, "", "nan"):
+        headers.pop()
+    return headers
+
+def append_row_to_xlsx(xlsx_path: str, sheet_name: str, row_dict: dict):
+    wb = load_workbook(xlsx_path)
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"시트가 없습니다: {sheet_name}")
+
+    ws = wb[sheet_name]
+    headers = get_sheet_headers(xlsx_path, sheet_name)
+    if not headers:
+        raise ValueError(f"헤더(1행)를 찾지 못했습니다: {sheet_name}")
+
+    row = []
+    for h in headers:
+        if h is None:
+            row.append(None)
+            continue
+        v = row_dict.get(h, None)
+        # 날짜 normalize
+        if isinstance(v, dt.datetime):
+            v = v.date()
+        row.append(v)
+
+    ws.append(row)
+    wb.save(xlsx_path)
+
+def download_xlsx_button(xlsx_path: str, label: str = "업데이트된 엑셀 다운로드"):
+    try:
+        data = Path(xlsx_path).read_bytes()
+        st.download_button(
+            label,
+            data=data,
+            file_name=Path(xlsx_path).name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    except Exception as e:
+        st.error("다운로드 파일 생성 실패")
+        st.exception(e)
+
+# ==========================================================
+# Lot auto generator (기존 Lot 스타일 추정)
+# ==========================================================
+def infer_lot_style(existing_lots: list[str], fallback_prefix: str):
+    """
+    returns (prefix, date_len, sep, seq_len)
+    - prefix: leading letters from last lot (or fallback)
+    - date_len: 6(YYMMDD) or 8(YYYYMMDD)
+    - sep: "-" or ""
+    - seq_len: digits
+    """
+    last = None
+    for x in reversed(existing_lots):
+        if x and str(x).strip() and str(x).lower() not in ("nan", "none"):
+            last = str(x).strip()
+            break
+
+    if not last:
+        return (fallback_prefix, 6, "-", 2)
+
+    m = re.match(r"^([A-Za-z]+)(.*)$", last)
+    if not m:
+        return (fallback_prefix, 6, "-", 2)
+
+    prefix = m.group(1) or fallback_prefix
+    rest = m.group(2) or ""
+    rest = rest.strip()
+
+    sep = "-" if "-" in rest else ""
+    if sep:
+        parts = rest.split("-", 1)
+        date_part = parts[0]
+        seq_part = parts[1] if len(parts) > 1 else ""
+        date_len = 8 if (date_part.startswith("20") and len(date_part) >= 8) else 6
+        seq_len = max(2, len(seq_part)) if seq_part else 2
+        return (prefix, date_len, sep, seq_len)
+
+    # no sep
+    # date length guess
+    if rest.startswith("20") and len(rest) >= 8:
+        date_len = 8
+    else:
+        date_len = 6
+
+    seq_len = max(2, len(rest) - date_len)
+    return (prefix, date_len, "", seq_len)
+
+def next_lot(existing_lots: list[str], date_value: dt.date, fallback_prefix: str):
+    prefix, date_len, sep, seq_len = infer_lot_style(existing_lots, fallback_prefix)
+    if date_len == 8:
+        date_str = date_value.strftime("%Y%m%d")
+    else:
+        date_str = date_value.strftime("%y%m%d")
+
+    # find existing seq max
+    pat = re.compile(rf"^{re.escape(prefix)}{re.escape(date_str)}{re.escape(sep)}(\d+)$")
+    max_seq = 0
+    for x in existing_lots:
+        if not x:
+            continue
+        s = str(x).strip()
+        mm = pat.match(s)
+        if not mm:
+            continue
+        try:
+            max_seq = max(max_seq, int(mm.group(1)))
+        except Exception:
+            pass
+
+    seq = max_seq + 1
+    seq_str = str(seq).zfill(seq_len)
+    return f"{prefix}{date_str}{sep}{seq_str}"
 
 # ==========================================================
 # Color/Stock helpers  (요청 반영: 화면에 BLACK/RED 등 대문자 표시)
@@ -247,7 +371,6 @@ def load_stock_history(stock_xlsx_path: str, product_to_color: dict[str, str]) -
     return hist
 
 def _color_scale_color_group():
-    # 도메인은 반드시 데이터와 동일해야 함(대문자)
     domain = ["BLACK","BLUE","GREEN","YELLOW","RED","PINK","WHITE","OTHER"]
     rng = ["#111111","#1f77b4","#2ca02c","#f1c40f","#d62728","#e377c2","#dddddd","#7f7f7f"]
     return alt.Scale(domain=domain, range=rng)
@@ -315,7 +438,6 @@ def load_binder_io_excel(xlsx_bytes: bytes, filename: str) -> dict[str, pd.DataF
     if not out:
         out["ALL"] = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
 
-    # 날짜 컬럼 있으면 최신순 정렬
     for k, df in list(out.items()):
         if df is None or df.empty:
             continue
@@ -332,7 +454,7 @@ def load_binder_io_excel(xlsx_bytes: bytes, filename: str) -> dict[str, pd.DataF
 # Title
 # ==========================================================
 st.title("액상 잉크 Lot 추적 관리 대시보드")
-st.caption("✅ 대시보드 | ✅ 요약 | ✅ 액상잉크 재고관리(재고/입고/사용량) | ✅ 바인더 입출고(파일 업로드/구글시트) | ✅ 빠른검색")
+st.caption("✅ 대시보드 | ✅ 요약 | ✅ 액상잉크 재고관리 | ✅ 바인더 입출고 | ✅ 신규 입력(엑셀 저장) | ✅ 빠른검색")
 
 # ==========================================================
 # Sidebar - files
@@ -356,7 +478,7 @@ if uploaded is not None:
         st.session_state["_uploaded_sig"] = sig
         st.session_state["_tmp_xlsx_path"] = str(tmp_path)
     xlsx_path = st.session_state.get("_tmp_xlsx_path", xlsx_path)
-    st.sidebar.info("업로드 파일(Lot 관리)로 실행 중입니다. (서버 재시작 시 누적 저장은 보장되지 않습니다.)")
+    st.sidebar.info("업로드 파일(Lot 관리)로 실행 중입니다. (원본 엑셀 자동 저장이 아니라, 업데이트 후 '다운로드'로 받는 방식이 안전합니다.)")
 
 if uploaded_stock is not None:
     sig = f"{uploaded_stock.name}:{uploaded_stock.size}"
@@ -369,7 +491,7 @@ if uploaded_stock is not None:
     st.sidebar.info("업로드 파일(재고)로 실행 중입니다.")
 
 # ==========================================================
-# Load Lot excel (중요: 파일 없으면 멈추지 않고 '빈 데이터'로 화면 표시)
+# Load Lot excel (파일 없으면 빈 데이터로라도 화면 표시)
 # ==========================================================
 if not Path(xlsx_path).exists():
     st.error(f"엑셀 파일을 찾을 수 없습니다: {xlsx_path}")
@@ -414,8 +536,8 @@ c_s_pc = find_col(single_df, "제품코드")
 # ==========================================================
 # Tabs
 # ==========================================================
-tab_dash, tab_summary, tab_stock, tab_binder, tab_search = st.tabs(
-    ["📊 대시보드", "📌 요약", "📦 액상잉크 재고관리", "📦 바인더 입출고", "🔎 빠른검색"]
+tab_dash, tab_summary, tab_stock, tab_binder, tab_input, tab_search = st.tabs(
+    ["📊 대시보드", "📌 요약", "📦 액상잉크 재고관리", "📦 바인더 입출고", "📝 신규 입력", "🔎 빠른검색"]
 )
 
 # ==========================================================
@@ -425,7 +547,6 @@ def render_summary():
     st.markdown('<div class="section-title">📌 요약</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-sub">상사가 “한 번에 이해”할 수 있게 KPI + 그래프 4개 + 상세(펼침) 구조</div>', unsafe_allow_html=True)
 
-    # 재고(최근 30일)
     stock_ok = bool(stock_xlsx_path and Path(stock_xlsx_path).exists())
     product_to_color = build_product_to_color_map(spec_single, single_df)
 
@@ -476,7 +597,6 @@ def render_summary():
         else:
             stock_ok = False
 
-    # 점도(최근 30일)
     visc_ok = bool(c_s_date and c_s_visc and c_s_pc and (c_s_date in single_df.columns) and (c_s_visc in single_df.columns) and (c_s_pc in single_df.columns))
     visc_kpis = {}
     daily_visc = pd.DataFrame()
@@ -521,7 +641,6 @@ def render_summary():
         else:
             visc_ok = False
 
-    # KPIs
     a, b = st.columns(2)
     with a:
         st.markdown("#### 🧾 재고(최근 30일)")
@@ -728,31 +847,6 @@ def render_stock_tab():
     )
     st.altair_chart((line + total_line).interactive(), use_container_width=True)
 
-    st.divider()
-    st.markdown("### 4) 재고 커버리지(일) 경보 (품목)")
-    target_days = st.slider("목표 커버리지(일)", 3, 30, 14, 1)
-    alert_days = st.slider("경보 기준(일)", 1, 21, 7, 1)
-
-    use_by_product = hist_f.groupby("product_code", as_index=False)["used_kg"].sum()
-    use_by_product["avg_daily_use"] = use_by_product["used_kg"] / day_span
-    stock_by_product = latest_df.groupby("product_code", as_index=False)["curr_stock_kg"].sum().rename(columns={"curr_stock_kg":"stock_kg"})
-    cov = stock_by_product.merge(use_by_product[["product_code","avg_daily_use"]], on="product_code", how="left")
-    cov["avg_daily_use"] = cov["avg_daily_use"].fillna(0.0)
-    cov["cover_days"] = cov.apply(lambda r: (r["stock_kg"]/r["avg_daily_use"]) if r["avg_daily_use"]>0 else None, axis=1)
-    cov["need_order_kg"] = cov.apply(lambda r: max(0.0, target_days*r["avg_daily_use"]-r["stock_kg"]) if r["avg_daily_use"]>0 else None, axis=1)
-
-    alert_df = cov[(cov["cover_days"].notna()) & (cov["cover_days"] <= float(alert_days))].sort_values("cover_days").head(20)
-    if alert_df.empty:
-        st.success("✅ 경보 기준 이하(커버리지 부족) 품목이 없습니다.")
-    else:
-        tmp = alert_df.copy()
-        tmp["stock_kg"] = tmp["stock_kg"].round(1)
-        tmp["avg_daily_use"] = tmp["avg_daily_use"].round(2)
-        tmp["cover_days"] = tmp["cover_days"].round(1)
-        tmp["need_order_kg"] = tmp["need_order_kg"].round(1)
-        st.warning(f"⚠️ 커버리지 {alert_days}일 이하 품목(상위 20개)")
-        st.dataframe(tmp, use_container_width=True, height=360)
-
 # ==========================================================
 # Dashboard tab
 # ==========================================================
@@ -869,6 +963,207 @@ def render_binder_io():
         st.rerun()
 
 # ==========================================================
+# NEW: Input tab (엑셀에 저장)
+# ==========================================================
+def render_input_tab():
+    st.markdown('<div class="section-title">📝 신규 입력</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">여기서 입력한 값은 해당 엑셀 시트에 바로 추가(append)됩니다.</div>', unsafe_allow_html=True)
+
+    if not Path(xlsx_path).exists():
+        st.error("Lot 관리 엑셀 파일이 없어서 저장할 수 없습니다. 좌측에서 업로드하거나 경로를 설정해 주세요.")
+        return
+
+    st.info("⚠️ 엑셀이 PC에서 열려 있으면 저장이 실패할 수 있습니다. 실패 시 엑셀을 닫고 다시 시도하거나, 업로드 파일로 실행 후 '다운로드'로 받는 방식을 사용하세요.")
+
+    subt1, subt2, subt3 = st.tabs(["🧪 단일색 잉크 신규 입력", "🧴 바인더 제조/입고 신규 입력", "↩️ 바인더 업체반환 입력"])
+
+    # ---------- 단일색 ----------
+    with subt1:
+        headers = get_sheet_headers(xlsx_path, SHEET_SINGLE)
+        if not headers:
+            st.error(f"시트/헤더를 읽지 못했습니다: {SHEET_SINGLE}")
+            return
+
+        # 기존 lot 목록(스타일 추정용)
+        existing_lots = []
+        if c_s_lot and c_s_lot in single_df.columns:
+            existing_lots = single_df[c_s_lot].dropna().astype(str).tolist()
+
+        colA, colB = st.columns([1.6, 1.4])
+        with colA:
+            st.markdown("#### 입력")
+            with st.form("form_single"):
+                in_date = st.date_input("입고일", value=dt.date.today())
+                product_code = st.text_input("제품코드", value="")
+                color_group = st.selectbox("색상군", COLOR_KEYS, index=COLOR_KEYS.index("OTHER"))
+                binder_lot = st.text_input("사용된 바인더 Lot", value="")
+
+                auto_lot = st.checkbox("단일색잉크 Lot 자동 생성", value=True)
+                if auto_lot:
+                    # fallback prefix는 기존 lot 기반으로 자동 추정되지만, 없으면 PCB
+                    lot_preview = next_lot(existing_lots, in_date, fallback_prefix="PCB")
+                    single_lot = st.text_input("단일색잉크 Lot", value=lot_preview)
+                else:
+                    single_lot = st.text_input("단일색잉크 Lot", value="")
+
+                visc = st.number_input("점도측정값(cP)", min_value=0, value=0, step=100)
+                judge = st.selectbox("점도판정", ["적합", "부적합", ""], index=2)
+
+                note = st.text_input("비고(있으면)", value="")
+
+                submit = st.form_submit_button("✅ 저장(단일색_수입검사에 추가)", use_container_width=True)
+
+        with colB:
+            st.markdown("#### 저장될 형태(미리보기)")
+            preview = {
+                "입고일": in_date,
+                "제품코드": normalize_product_code(product_code),
+                "색상군": normalize_color_group(color_group),
+                "사용된 바인더 Lot": binder_lot,
+                "단일색잉크 Lot": single_lot,
+                "점도측정값(cP)": visc if visc != 0 else None,
+                "점도판정": judge if judge else None,
+                "비고": note if note else None,
+            }
+            st.dataframe(pd.DataFrame([preview]), use_container_width=True, height=220)
+
+        if submit:
+            # 필수 체크
+            if not preview["입고일"] or not preview["제품코드"] or not preview["단일색잉크 Lot"]:
+                st.error("입고일 / 제품코드 / 단일색잉크 Lot 는 필수입니다.")
+            else:
+                try:
+                    append_row_to_xlsx(xlsx_path, SHEET_SINGLE, preview)
+                    st.session_state["_toast_msg"] = "단일색_수입검사에 저장 완료"
+                    st.cache_data.clear()
+                    st.success("저장 완료 ✅")
+                    download_xlsx_button(xlsx_path)
+                    st.rerun()
+                except PermissionError:
+                    st.error("저장 실패: 엑셀 파일이 열려 있거나 잠겨 있습니다. 엑셀을 닫고 다시 시도하세요.")
+                    download_xlsx_button(xlsx_path)
+                except Exception as e:
+                    st.error("저장 실패")
+                    st.exception(e)
+
+    # ---------- 바인더 제조/입고 ----------
+    with subt2:
+        headers = get_sheet_headers(xlsx_path, SHEET_BINDER)
+        if not headers:
+            st.error(f"시트/헤더를 읽지 못했습니다: {SHEET_BINDER}")
+            return
+
+        c_lot_b = find_col(binder_df, "Lot(자동)")
+        existing_b_lots = []
+        if c_lot_b and c_lot_b in binder_df.columns:
+            existing_b_lots = binder_df[c_lot_b].dropna().astype(str).tolist()
+
+        st.markdown("#### 입력")
+        with st.form("form_binder"):
+            b_date = st.date_input("제조/입고일", value=dt.date.today(), key="b_date_in")
+            auto_lot_b = st.checkbox("바인더 Lot(자동) 자동 생성", value=True)
+            if auto_lot_b:
+                # 기존 lot가 있으면 그 스타일 따라가고, 없으면 PLB fallback
+                b_lot = st.text_input("Lot(자동)", value=next_lot(existing_b_lots, b_date, fallback_prefix="PLB"))
+            else:
+                b_lot = st.text_input("Lot(자동)", value="")
+
+            b_judge = st.selectbox("판정", ["적합", "부적합", ""], index=2, key="b_judge_in")
+            b_note = st.text_input("비고(있으면)", value="", key="b_note_in")
+
+            # 나머지 컬럼은 선택 입력(있으면)
+            with st.expander("추가 항목(시트에 컬럼이 있으면 같이 저장됨)"):
+                extras = {}
+                # 흔히 있을 법한 컬럼만 가볍게 제공(없으면 무시됨)
+                candidates = ["바인더타입", "바인더명", "제조량(kg)", "점도(cP)", "점도", "투입량(kg)", "담당", "원료 Lot", "원료Lot"]
+                for name in candidates:
+                    if name in headers:
+                        if "kg" in name.lower() or "량" in name:
+                            extras[name] = st.number_input(name, min_value=0.0, value=0.0, step=1.0)
+                        else:
+                            extras[name] = st.text_input(name, value="")
+
+            submit_b = st.form_submit_button("✅ 저장(바인더_제조_입고에 추가)", use_container_width=True)
+
+        if submit_b:
+            row = {"제조/입고일": b_date, "Lot(자동)": b_lot, "판정": b_judge if b_judge else None, "비고": b_note if b_note else None}
+            # extras 반영(0은 None 처리)
+            for k, v in extras.items():
+                if isinstance(v, (int, float)) and v == 0:
+                    row[k] = None
+                else:
+                    row[k] = v if str(v).strip() else None
+
+            if not row.get("제조/입고일") or not row.get("Lot(자동)"):
+                st.error("제조/입고일 / Lot(자동) 은 필수입니다.")
+            else:
+                try:
+                    append_row_to_xlsx(xlsx_path, SHEET_BINDER, row)
+                    st.session_state["_toast_msg"] = "바인더_제조_입고에 저장 완료"
+                    st.cache_data.clear()
+                    st.success("저장 완료 ✅")
+                    download_xlsx_button(xlsx_path)
+                    st.rerun()
+                except PermissionError:
+                    st.error("저장 실패: 엑셀 파일이 열려 있거나 잠겨 있습니다. 엑셀을 닫고 다시 시도하세요.")
+                    download_xlsx_button(xlsx_path)
+                except Exception as e:
+                    st.error("저장 실패")
+                    st.exception(e)
+
+        st.divider()
+        st.markdown("#### 최근 바인더 기록(상위 30)")
+        st.dataframe(binder_df.tail(30).iloc[::-1], use_container_width=True, height=320)
+
+    # ---------- 바인더 업체반환 ----------
+    with subt3:
+        headers = get_sheet_headers(xlsx_path, SHEET_BINDER_RETURN)
+        if not headers:
+            st.error(f"시트/헤더를 읽지 못했습니다: {SHEET_BINDER_RETURN}")
+            return
+
+        st.markdown("#### 입력")
+        with st.form("form_return"):
+            r_date = st.date_input("일자", value=dt.date.today(), key="r_date")
+            r_type = st.text_input("바인더타입", value="")
+            r_name = st.text_input("바인더명", value="")
+            r_lot = st.text_input("바인더 Lot", value="")
+            r_qty = st.number_input("반환량(kg)", min_value=0.0, value=0.0, step=1.0)
+            r_note = st.text_input("비고", value="")
+
+            submit_r = st.form_submit_button("✅ 저장(바인더_업체반환에 추가)", use_container_width=True)
+
+        if submit_r:
+            row = {
+                "일자": r_date,
+                "바인더타입": r_type if r_type else None,
+                "바인더명": r_name if r_name else None,
+                "바인더 Lot": r_lot if r_lot else None,
+                "반환량(kg)": r_qty if r_qty != 0 else None,
+                "비고": r_note if r_note else None,
+            }
+            if not row["일자"] or not row["바인더 Lot"] or row["반환량(kg)"] is None:
+                st.error("일자 / 바인더 Lot / 반환량(kg)은 필수입니다.")
+            else:
+                try:
+                    append_row_to_xlsx(xlsx_path, SHEET_BINDER_RETURN, row)
+                    st.session_state["_toast_msg"] = "바인더_업체반환에 저장 완료"
+                    st.cache_data.clear()
+                    st.success("저장 완료 ✅")
+                    download_xlsx_button(xlsx_path)
+                    st.rerun()
+                except PermissionError:
+                    st.error("저장 실패: 엑셀 파일이 열려 있거나 잠겨 있습니다. 엑셀을 닫고 다시 시도하세요.")
+                    download_xlsx_button(xlsx_path)
+                except Exception as e:
+                    st.error("저장 실패")
+                    st.exception(e)
+
+        st.divider()
+        st.markdown("#### 최근 반환 기록(상위 30)")
+        st.dataframe(binder_return_df.tail(30).iloc[::-1], use_container_width=True, height=320)
+
+# ==========================================================
 # Search tab
 # ==========================================================
 def render_search():
@@ -876,7 +1171,6 @@ def render_search():
     mode = st.selectbox("검색 종류", ["바인더 Lot", "단일색 Lot", "제품코드"])
     q = st.text_input("검색어", placeholder="예: PCB20250112-01 / PLB25041501 / PL-835-1 ...")
 
-    # prep
     s_df = single_df.copy()
     if c_s_date and (c_s_date in s_df.columns):
         s_df[c_s_date] = pd.to_datetime(s_df[c_s_date], errors="coerce")
@@ -929,6 +1223,9 @@ with tab_stock:
 
 with tab_binder:
     render_binder_io()
+
+with tab_input:
+    render_input_tab()
 
 with tab_search:
     render_search()
