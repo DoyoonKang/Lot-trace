@@ -850,15 +850,24 @@ def render_stock_tab():
     with c1:
         st.markdown("### 1) 현재 재고(최신일) — 색상계열")
         ch = bar_chart(inv, "재고(kg)")
-        st.altair_chart(ch, use_container_width=True) if ch else st.info("표시할 재고 데이터가 없습니다.")
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("표시할 재고 데이터가 없습니다.")
     with c2:
         st.markdown("### 2) 기간 사용량 — 색상계열")
         ch = bar_chart(use, "사용량(kg)")
-        st.altair_chart(ch, use_container_width=True) if ch else st.info("표시할 사용량 데이터가 없습니다.")
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("표시할 사용량 데이터가 없습니다.")
     with c3:
         st.markdown("### 3) 기간 입고(추정) — 색상계열")
         ch = bar_chart(inbound, "입고(kg)")
-        st.altair_chart(ch, use_container_width=True) if ch else st.info("표시할 입고 데이터가 없습니다.")
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("표시할 입고 데이터가 없습니다.")
 
     st.divider()
 
