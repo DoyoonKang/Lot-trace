@@ -554,7 +554,7 @@ tab_dash, tab_summary, tab_stock, tab_binder, tab_input, tab_search = st.tabs(
 # ==========================================================
 def render_summary():
     st.markdown('<div class="section-title">📌 요약</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">상사가 “한 번에 이해”할 수 있게 KPI + 핵심 그래프 + (상세는 펼침)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">상사가 "한 번에 이해"할 수 있게 KPI + 핵심 그래프 + (상세는 펼침)</div>', unsafe_allow_html=True)
 
     stock_ok = bool(stock_xlsx_path and Path(stock_xlsx_path).exists())
     product_to_color = build_product_to_color_map(spec_single, single_df)
@@ -646,10 +646,12 @@ def render_summary():
                 "부적합률(%)": ng_rate,
             }
 
+            # ✅ 수정된 부분: groupby 오류 해결
             daily_visc = (
-                df30.groupby(df30[c_s_date].dt.date, as_index=False)
+                df30.groupby(df30[c_s_date].dt.date)
                 .agg(mean_visc=("_점도", "mean"), cnt=("_점도", "size"))
-                .rename(columns={df30.groupby(df30[c_s_date].dt.date).size().index.name or 0: "date"})
+                .reset_index()
+                .rename(columns={c_s_date: "date"})
             )
             daily_visc["date"] = pd.to_datetime(daily_visc["date"])
 
