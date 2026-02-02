@@ -17,12 +17,207 @@ st.set_page_config(page_title="액상 잉크 Lot 추적 관리", page_icon="🧪
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 1.1rem; padding-bottom: 1.8rem; }
-      .section-title { font-size: 1.15rem; font-weight: 900; margin: 0.2rem 0 0.2rem 0; }
-      .section-sub { color: rgba(49,51,63,0.65); font-size: 0.92rem; margin-bottom: 0.6rem; }
-      .kpi-note { color: rgba(49,51,63,0.70); font-size: 0.85rem; margin-top: -0.2rem; }
-      div[data-testid="stExpander"] > details > summary { font-weight: 800; }
-      .pill { display:inline-block; padding:0.15rem 0.5rem; border-radius: 999px; font-size:0.85rem; font-weight:800; }
+      /* 전체 레이아웃 */
+      .block-container { 
+        padding-top: 1.5rem; 
+        padding-bottom: 2rem; 
+        max-width: 1400px;
+      }
+      
+      /* 타이틀 */
+      h1 {
+        color: #1f2937;
+        font-weight: 800;
+        font-size: 2.2rem !important;
+        margin-bottom: 0.5rem !important;
+      }
+      
+      /* KPI 카드 스타일 */
+      div[data-testid="metric-container"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 12px;
+        padding: 1rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      }
+      
+      div[data-testid="metric-container"] label {
+        color: white !important;
+        font-weight: 700 !important;
+        font-size: 0.85rem !important;
+      }
+      
+      div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+        color: white !important;
+        font-size: 1.8rem !important;
+        font-weight: 900 !important;
+      }
+      
+      /* 섹션 타이틀 */
+      .section-title { 
+        font-size: 1.4rem; 
+        font-weight: 900; 
+        margin: 1.5rem 0 0.5rem 0;
+        color: #1f2937;
+        border-left: 5px solid #667eea;
+        padding-left: 12px;
+      }
+      
+      .section-sub { 
+        color: #6b7280; 
+        font-size: 0.95rem; 
+        margin-bottom: 1rem;
+        padding-left: 17px;
+      }
+      
+      /* KPI 노트 */
+      .kpi-note { 
+        color: #6b7280; 
+        font-size: 0.88rem; 
+        margin-top: 0.5rem;
+        padding: 0.8rem;
+        background: #f3f4f6;
+        border-radius: 8px;
+        border-left: 3px solid #fbbf24;
+      }
+      
+      /* Expander 스타일 */
+      div[data-testid="stExpander"] {
+        border: 2px solid #e5e7eb;
+        border-radius: 10px;
+        background: #ffffff;
+      }
+      
+      div[data-testid="stExpander"] > details > summary { 
+        font-weight: 800;
+        color: #374151;
+        font-size: 1.05rem;
+      }
+      
+      /* 탭 스타일 */
+      .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #f9fafb;
+        padding: 8px;
+        border-radius: 10px;
+      }
+      
+      .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: 700;
+        font-size: 0.95rem;
+      }
+      
+      .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white !important;
+      }
+      
+      /* 테이블 스타일 */
+      .dataframe {
+        border-radius: 10px !important;
+        overflow: hidden;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+      }
+      
+      /* 버튼 스타일 */
+      .stButton > button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 0.6rem 1.5rem;
+        font-weight: 700;
+        transition: all 0.3s;
+      }
+      
+      .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      }
+      
+      /* 다운로드 버튼 */
+      .stDownloadButton > button {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 700;
+      }
+      
+      /* 경고 박스 */
+      .stAlert {
+        border-radius: 10px;
+        border-left: 5px solid;
+      }
+      
+      /* 차트 컨테이너 */
+      .chart-container {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        margin-bottom: 1rem;
+      }
+      
+      /* 폼 스타일 */
+      .stForm {
+        background: #f9fafb;
+        padding: 1.5rem;
+        border-radius: 12px;
+        border: 2px solid #e5e7eb;
+      }
+      
+      /* 입력 필드 */
+      .stTextInput > div > div > input,
+      .stNumberInput > div > div > input,
+      .stSelectbox > div > div > div {
+        border-radius: 8px;
+        border: 2px solid #e5e7eb;
+      }
+      
+      /* 구분선 */
+      hr {
+        margin: 2rem 0;
+        border: none;
+        border-top: 2px solid #e5e7eb;
+      }
+      
+      /* 사이드바 */
+      .css-1d391kg, [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #f9fafb 0%, #ffffff 100%);
+      }
+      
+      /* 상태 배지 */
+      .status-badge-success {
+        background: #10b981;
+        color: white;
+        padding: 0.3rem 0.8rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        display: inline-block;
+      }
+      
+      .status-badge-warning {
+        background: #f59e0b;
+        color: white;
+        padding: 0.3rem 0.8rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        display: inline-block;
+      }
+      
+      .status-badge-error {
+        background: #ef4444;
+        color: white;
+        padding: 0.3rem 0.8rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        display: inline-block;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -461,8 +656,24 @@ def load_binder_io_excel(xlsx_bytes: bytes, filename: str) -> dict[str, pd.DataF
 # ==========================================================
 # Title
 # ==========================================================
-st.title("액상 잉크 Lot 추적 관리 대시보드")
-st.caption("✅ 대시보드 | ✅ 요약 | ✅ 액상잉크 재고관리 | ✅ 바인더 입출고 | ✅ 신규 입력(엑셀 저장) | ✅ 빠른검색")
+st.title("🧪 액상 잉크 Lot 추적 관리 대시보드")
+st.markdown(
+    """
+    <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                padding: 1rem 1.5rem; 
+                border-radius: 12px; 
+                margin-bottom: 1.5rem;
+                color: white;'>
+        <h3 style='margin: 0; color: white; font-size: 1.1rem;'>
+            📊 실시간 재고 · 점도 · Lot 추적 통합 관리 시스템
+        </h3>
+        <p style='margin: 0.5rem 0 0 0; font-size: 0.9rem; opacity: 0.9;'>
+            ✅ 대시보드 | ✅ 요약 | ✅ 재고관리 | ✅ 바인더 입출고 | ✅ 신규 입력 | ✅ 빠른검색
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # ==========================================================
 # Sidebar - files
@@ -553,8 +764,8 @@ tab_dash, tab_summary, tab_stock, tab_binder, tab_input, tab_search = st.tabs(
 # Render: Summary (상사용 1장 요약)
 # ==========================================================
 def render_summary():
-    st.markdown('<div class="section-title">📌 요약</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">상사가 "한 번에 이해"할 수 있게 KPI + 핵심 그래프 + (상세는 펼침)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📌 경영진 요약 리포트</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">핵심 KPI와 주요 지표를 한눈에 확인할 수 있습니다</div>', unsafe_allow_html=True)
 
     stock_ok = bool(stock_xlsx_path and Path(stock_xlsx_path).exists())
     product_to_color = build_product_to_color_map(spec_single, single_df)
@@ -665,122 +876,147 @@ def render_summary():
             visc_ok = False
 
     # ---------- KPI Row ----------
+    st.markdown("### 📊 핵심 성과 지표 (KPI)")
+    
     a, b = st.columns(2)
     with a:
-        st.markdown("#### 🧾 재고(최근 30일)")
+        st.markdown("#### 📦 재고 현황 (최근 30일)")
         if not stock_ok:
-            st.info("재고 파일이 없거나 읽지 못했습니다. (좌측 사이드바에서 재고 파일 경로/업로드 설정)")
+            st.info("💡 재고 파일이 없거나 읽지 못했습니다. 좌측 사이드바에서 재고 파일을 설정해주세요.")
         else:
-            k1, k2, k3, k4, k5 = st.columns([1.2, 1.7, 1.7, 1.4, 1.8])
-            k1.metric("최신일", stock_kpis["재고 최신일"])
-            k2.metric("총 재고(kg)", f'{stock_kpis["현재 총 재고(kg)"]:,.1f}')
-            k3.metric("30일 사용량(kg)", f'{stock_kpis["최근 30일 사용량(kg)"]:,.1f}')
-            k4.metric("입고(건)", f'{stock_kpis["최근 30일 입고(건)"]:,}')
-            k5.metric("일평균(kg/일)", f'{stock_kpis["평균 사용량(kg/일)"]:,.1f}')
+            k1, k2 = st.columns(2)
+            k1.metric("📅 최신 업데이트", stock_kpis["재고 최신일"])
+            k2.metric("📊 총 재고량", f'{stock_kpis["현재 총 재고(kg)"]:,.1f} kg')
+            
+            k3, k4, k5 = st.columns(3)
+            k3.metric("📉 30일 사용량", f'{stock_kpis["최근 30일 사용량(kg)"]:,.1f} kg')
+            k4.metric("📥 입고 건수", f'{stock_kpis["최근 30일 입고(건)"]:,}')
+            k5.metric("⚡ 일평균 사용", f'{stock_kpis["평균 사용량(kg/일)"]:,.1f} kg/일')
 
     with b:
-        st.markdown("#### 🧪 점도(최근 30일)")
+        st.markdown("#### 🧪 품질 현황 (최근 30일)")
         if not visc_ok:
-            st.info("단일색 시트에 입고일/점도측정값/제품코드 컬럼이 필요합니다.")
+            st.info("💡 단일색 시트에 입고일/점도측정값/제품코드 컬럼이 필요합니다.")
         else:
-            k1, k2, k3 = st.columns(3)
-            k1.metric("최신일", visc_kpis["점도 최신일"])
-            k2.metric("측정(건)", f'{visc_kpis["최근 30일 측정(건)"]:,}')
-            k3.metric("부적합률(%)", f'{visc_kpis["부적합률(%)"]:.1f}')
+            k1, k2 = st.columns(2)
+            k1.metric("📅 최신 측정일", visc_kpis["점도 최신일"])
+            k2.metric("🔬 총 측정 건수", f'{visc_kpis["최근 30일 측정(건)"]:,}')
+            
+            k3, k4 = st.columns(2)
+            k3.metric("❌ 부적합", f'{visc_kpis["부적합(건)"]:,} 건')
+            
+            ng_rate = visc_kpis["부적합률(%)"]
+            if ng_rate > 10:
+                k4.markdown(f'<div class="status-badge-error">⚠️ 부적합률 {ng_rate:.1f}%</div>', unsafe_allow_html=True)
+            elif ng_rate > 5:
+                k4.markdown(f'<div class="status-badge-warning">⚠️ 부적합률 {ng_rate:.1f}%</div>', unsafe_allow_html=True)
+            else:
+                k4.markdown(f'<div class="status-badge-success">✅ 부적합률 {ng_rate:.1f}%</div>', unsafe_allow_html=True)
 
     st.divider()
-    st.markdown("#### 📊 한눈에 보는 그래프 (핵심 4개)")
+    st.markdown("### 📈 핵심 시각화 차트")
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("**재고(최신일) — 색상계열(BLACK/RED …)**")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        st.markdown("**📦 현재 재고 현황 (색상별)**")
         if stock_ok and not inv_color.empty:
             ch = alt.Chart(inv_color).mark_bar().encode(
-                y=alt.Y("color_group:N", sort="-x", title=""),
-                x=alt.X("kg:Q", title="재고(kg)"),
+                y=alt.Y("color_group:N", sort="-x", title="색상 계열"),
+                x=alt.X("kg:Q", title="재고량 (kg)"),
                 color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=None),
                 tooltip=[alt.Tooltip("color_group:N", title="색상계열"), alt.Tooltip("kg:Q", title="재고(kg)", format=",.1f")],
-            ).properties(height=260)
+            ).properties(height=280)
             st.altair_chart(ch, use_container_width=True)
         else:
-            st.info("재고 데이터가 없습니다.")
+            st.info("📊 재고 데이터가 없습니다.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with c2:
-        st.markdown("**최근 30일 평균 점도(일별)**")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        st.markdown("**🧪 점도 추이 (일별 평균)**")
         if visc_ok and not daily_visc.empty:
-            ch = alt.Chart(daily_visc).mark_line(point=True).encode(
+            ch = alt.Chart(daily_visc).mark_line(point=True, strokeWidth=3).encode(
                 x=alt.X("date:T", title="날짜"),
-                y=alt.Y("mean_visc:Q", title="평균 점도(cP)"),
+                y=alt.Y("mean_visc:Q", title="평균 점도 (cP)"),
                 tooltip=[
                     alt.Tooltip("date:T", title="날짜"),
                     alt.Tooltip("mean_visc:Q", title="평균점도", format=",.0f"),
                     alt.Tooltip("cnt:Q", title="측정(건)", format=",.0f"),
                 ],
-            ).properties(height=260)
+            ).properties(height=280)
             st.altair_chart(ch, use_container_width=True)
         else:
-            st.info("점도 데이터가 없습니다.")
+            st.info("📊 점도 데이터가 없습니다.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     c3, c4 = st.columns(2)
     with c3:
-        st.markdown("**최근 30일 사용량 — 색상계열(BLACK/RED …)**")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        st.markdown("**📉 30일 사용량 (색상별)**")
         if stock_ok and not use_color.empty:
             ch = alt.Chart(use_color).mark_bar().encode(
-                y=alt.Y("color_group:N", sort="-x", title=""),
-                x=alt.X("kg:Q", title="사용량(kg)"),
+                y=alt.Y("color_group:N", sort="-x", title="색상 계열"),
+                x=alt.X("kg:Q", title="사용량 (kg)"),
                 color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=None),
                 tooltip=[alt.Tooltip("color_group:N", title="색상계열"), alt.Tooltip("kg:Q", title="사용량(kg)", format=",.1f")],
-            ).properties(height=260)
+            ).properties(height=280)
             st.altair_chart(ch, use_container_width=True)
         else:
-            st.info("사용량 데이터가 없습니다.")
+            st.info("📊 사용량 데이터가 없습니다.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with c4:
-        st.markdown("**부적합 Top 제품코드(최근 30일)**")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        st.markdown("**⚠️ 부적합 다발 제품 (Top 8)**")
         if visc_ok and not top_ng.empty:
-            ch = alt.Chart(top_ng).mark_bar().encode(
-                y=alt.Y(f"{c_s_pc}:N", sort="-x", title=""),
-                x=alt.X("ng_cnt:Q", title="부적합(건)"),
+            ch = alt.Chart(top_ng).mark_bar(color='#ef4444').encode(
+                y=alt.Y(f"{c_s_pc}:N", sort="-x", title="제품 코드"),
+                x=alt.X("ng_cnt:Q", title="부적합 건수"),
                 tooltip=[alt.Tooltip(f"{c_s_pc}:N", title="제품코드"), alt.Tooltip("ng_cnt:Q", title="부적합(건)", format=",.0f")],
-            ).properties(height=260)
+            ).properties(height=280)
             st.altair_chart(ch, use_container_width=True)
         else:
-            st.info("부적합 데이터가 없습니다.")
+            st.success("✅ 부적합 데이터가 없습니다.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.expander("🔎 (상세) 커버리지 경보 Top10 (재고/평균사용량)"):
+    with st.expander("🔍 상세 분석: 재고 부족 경보 (커버리지 Top 10)"):
         if stock_ok and not cov_alert.empty:
+            st.warning("⚠️ 다음 제품들은 재고 소진 위험이 있습니다. 발주를 검토해주세요.")
             show = cov_alert.copy()
             show["stock_kg"] = show["stock_kg"].round(1)
             show["avg_daily_use"] = show["avg_daily_use"].round(2)
             show["cover_days"] = show["cover_days"].round(1)
             st.dataframe(show, use_container_width=True, height=320)
         else:
-            st.info("커버리지 계산 데이터가 없습니다.")
+            st.success("✅ 현재 재고 부족 위험 제품이 없습니다.")
 
 # ==========================================================
 # Render: Stock tab (재고/입고/사용량을 한 탭에서 보기 좋게)
 # ==========================================================
 def render_stock_tab():
     st.markdown('<div class="section-title">📦 액상잉크 재고관리</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">재고(현재) · 입고(추정) · 사용량(일별)을 BLACK/RED 등 색상계열로 요약합니다.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">재고 현황 · 입고 추정 · 사용량 추이를 색상별로 분석합니다</div>', unsafe_allow_html=True)
 
     if not stock_xlsx_path or not Path(stock_xlsx_path).exists():
-        st.error("재고 파일 경로가 올바르지 않습니다. (좌측 사이드바에서 재고 파일 경로/업로드 설정)")
+        st.error("❌ 재고 파일 경로가 올바르지 않습니다. 좌측 사이드바에서 재고 파일을 설정해주세요.")
         return
 
     product_to_color = build_product_to_color_map(spec_single, single_df)
     stock_sig = file_sig(stock_xlsx_path)
     hist = load_stock_history(stock_xlsx_path, stock_sig, product_to_color)
     if hist.empty:
-        st.error("재고 엑셀을 읽지 못했습니다. (시트명: 1.15 형식 / 컬럼: 품목명, 금일 재고(kg), 하루 사용량(kg) 확인)")
+        st.error("❌ 재고 엑셀을 읽지 못했습니다. (시트명: 1.15 형식 / 컬럼: 품목명, 금일 재고(kg), 하루 사용량(kg) 확인)")
         return
 
     min_d = hist["date"].min().date()
     max_d = hist["date"].max().date()
 
+    # 필터 섹션
+    st.markdown("### 🔍 조회 기간 및 필터")
     left, mid, right = st.columns([2.2, 2.8, 5.0])
     with left:
-        quick = st.selectbox("기간(빠른 선택)", ["최근 7일", "최근 30일", "최근 90일", "전체", "직접 선택"], index=1)
+        quick = st.selectbox("📅 기간 선택", ["최근 7일", "최근 30일", "최근 90일", "전체", "직접 선택"], index=1)
     with mid:
         if quick == "직접 선택":
             start = st.date_input("시작일", value=max(min_d, max_d - dt.timedelta(days=30)), min_value=min_d, max_value=max_d)
@@ -795,10 +1031,10 @@ def render_stock_tab():
             else:
                 start = min_d
             end = max_d
-            st.write(f"**{start} ~ {end}**")
+            st.write(f"**📅 {start} ~ {end}**")
     with right:
         divisions = sorted([x for x in hist["division"].dropna().unique().tolist() if str(x).strip() and str(x).lower() not in ("nan", "none")])
-        sel_div = st.multiselect("구분(PL/NPL/NSL 등)", divisions, default=divisions)
+        sel_div = st.multiselect("🏭 제품군 (PL/NPL/NSL 등)", divisions, default=divisions)
 
     if start > end:
         start, end = end, start
@@ -820,15 +1056,17 @@ def render_stock_tab():
     day_span = max(1, (end - start).days + 1)
     avg_daily_use = total_used / day_span if day_span else 0.0
 
-    k1, k2, k3, k4, k5, k6 = st.columns([1.3, 1.6, 1.6, 1.3, 1.4, 1.8])
-    k1.metric("재고 최신일", latest_date.date().isoformat())
-    k2.metric("현재 총 재고(kg)", f"{total_stock:,.1f}")
-    k3.metric("기간 총 사용량(kg)", f"{total_used:,.1f}")
-    k4.metric("입고(건)", f"{inbound_events:,}")
-    k5.metric("입고(kg)", f"{inbound_kg:,.1f}")
-    k6.metric("평균 일 사용량(kg/일)", f"{avg_daily_use:,.1f}")
+    # KPI 카드
+    st.markdown("### 📊 주요 지표")
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("📅 최신 업데이트", latest_date.date().isoformat())
+    k2.metric("📦 현재 총 재고", f"{total_stock:,.1f} kg")
+    k3.metric("📉 기간 사용량", f"{total_used:,.1f} kg")
+    k4.metric("📥 입고 건수", f"{inbound_events:,}")
+    k5.metric("📦 입고량", f"{inbound_kg:,.1f} kg")
+    k6.metric("⚡ 일평균 사용", f"{avg_daily_use:,.1f} kg")
 
-    st.markdown('<div class="kpi-note">※ 입고는 "하루 사용량"이 음수로 기입된 경우(재고 증가)를 입고로 추정합니다.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-note">💡 입고는 "하루 사용량"이 음수로 기입된 경우(재고 증가)를 입고로 추정합니다.</div>', unsafe_allow_html=True)
     st.divider()
 
     # ---------- 1) 색상계열 바차트 ----------
@@ -862,38 +1100,47 @@ def render_stock_tab():
             color=alt.value('#333333')
         )
         
-        return (bars + text).properties(height=240)
+        return (bars + text).properties(height=260)
 
+    st.markdown("### 📊 색상별 재고 · 사용량 · 입고 현황")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown("### 1) 현재 재고(최신일) — 색상계열")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        st.markdown("**1) 현재 재고 (최신일)**")
         ch = bar_chart(inv, "재고(kg)")
         if ch is not None:
             st.altair_chart(ch, use_container_width=True)
         else:
-            st.info("표시할 재고 데이터가 없습니다.")
+            st.info("📊 표시할 재고 데이터가 없습니다.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
     with c2:
-        st.markdown("### 2) 기간 사용량 — 색상계열")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        st.markdown("**2) 기간 사용량**")
         ch = bar_chart(use, "사용량(kg)")
         if ch is not None:
             st.altair_chart(ch, use_container_width=True)
         else:
-            st.info("표시할 사용량 데이터가 없습니다.")
+            st.info("📊 표시할 사용량 데이터가 없습니다.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
     with c3:
-        st.markdown("### 3) 기간 입고(추정) — 색상계열")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        st.markdown("**3) 기간 입고 (추정)**")
         ch = bar_chart(inbound, "입고(kg)")
         if ch is not None:
             st.altair_chart(ch, use_container_width=True)
         else:
-            st.info("표시할 입고 데이터가 없습니다.")
+            st.info("📊 표시할 입고 데이터가 없습니다.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
 
     # ---------- 2) 일별 사용량 추이 ----------
-    st.markdown("### 4) 일별 사용량 추이(kg) — 색상계열")
+    st.markdown("### 📈 일별 사용량 추이 분석")
     present = [k for k in COLOR_KEYS if k in hist_f["color_group"].unique().tolist()]
     default_keys = [k for k in present if k != "OTHER"][:5] or present
-    sel_keys = st.multiselect("표시할 색상계열", COLOR_KEYS, default=default_keys)
+    sel_keys = st.multiselect("🎨 표시할 색상계열", COLOR_KEYS, default=default_keys)
 
     daily = (
         hist_f[hist_f["color_group"].isin(sel_keys)]
@@ -901,7 +1148,8 @@ def render_stock_tab():
     )
     total = hist_f.groupby("date", as_index=False)["used_kg"].sum().rename(columns={"used_kg": "TOTAL"})
 
-    line = alt.Chart(daily).mark_line(point=True).encode(
+    st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+    line = alt.Chart(daily).mark_line(point=True, strokeWidth=2.5).encode(
         x=alt.X("date:T", title="날짜"),
         y=alt.Y("used_kg:Q", title="사용량(kg)"),
         color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=alt.Legend(title="색상계열")),
@@ -911,18 +1159,19 @@ def render_stock_tab():
             alt.Tooltip("used_kg:Q", title="사용량(kg)", format=",.1f"),
         ],
     )
-    total_line = alt.Chart(total).mark_line(point=True, strokeDash=[6, 3]).encode(
+    total_line = alt.Chart(total).mark_line(point=True, strokeDash=[6, 3], strokeWidth=3, color='#374151').encode(
         x="date:T",
         y=alt.Y("TOTAL:Q", title="사용량(kg)"),
         tooltip=[alt.Tooltip("date:T", title="날짜"), alt.Tooltip("TOTAL:Q", title="TOTAL(kg)", format=",.1f")],
     )
     st.altair_chart((line + total_line).interactive(), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
 
     # ---------- 3) 커버리지(발주 판단용) ----------
-    st.markdown("### 5) 커버리지(재고 일수) — 발주 판단용")
-    st.caption("커버리지 = (최신 재고 kg) / (선택기간 평균 일사용량). 평균 사용량이 0이면 커버리지 계산 제외.")
+    st.markdown("### ⚠️ 재고 커버리지 분석 (발주 판단)")
+    st.caption("💡 커버리지 = (최신 재고 kg) / (선택기간 평균 일사용량). 평균 사용량이 0이면 커버리지 계산 제외.")
 
     use_by_product = hist_f.groupby("product_code", as_index=False)["used_kg"].sum()
     use_by_product["avg_daily_use"] = use_by_product["used_kg"] / day_span
@@ -933,7 +1182,7 @@ def render_stock_tab():
     cov["cover_days"] = cov.apply(lambda r: (r["stock_kg"] / r["avg_daily_use"]) if r["avg_daily_use"] > 0 else None, axis=1)
     cov["color_group"] = cov["product_code"].map(product_to_color).fillna("OTHER").apply(normalize_color_group)
 
-    warn_days = st.slider("경보 기준(일)", min_value=1, max_value=60, value=14, step=1)
+    warn_days = st.slider("⚠️ 경보 기준 (일)", min_value=1, max_value=60, value=14, step=1)
     show_cov = cov[cov["cover_days"].notna()].copy()
     show_cov["cover_days"] = show_cov["cover_days"].round(1)
     show_cov["stock_kg"] = show_cov["stock_kg"].round(1)
@@ -941,9 +1190,9 @@ def render_stock_tab():
 
     alert = show_cov[show_cov["cover_days"] <= warn_days].sort_values("cover_days").head(30)
     if alert.empty:
-        st.success("✅ 경보 기준 이하 품목이 없습니다.")
+        st.success(f"✅ 커버리지 {warn_days}일 이하 품목이 없습니다. 재고 상태가 양호합니다.")
     else:
-        st.warning(f"⚠️ 커버리지 {warn_days}일 이하 품목이 {len(alert)}개 있습니다. (상위 30개 표시)")
+        st.warning(f"⚠️ 커버리지 {warn_days}일 이하 품목이 **{len(alert)}개** 있습니다. 발주를 검토해주세요. (상위 30개 표시)")
         st.dataframe(alert, use_container_width=True, height=360)
 
 # ==========================================================
