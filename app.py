@@ -839,12 +839,30 @@ def render_stock_tab():
     def bar_chart(df: pd.DataFrame, value_title: str):
         if df.empty:
             return None
-        return alt.Chart(df).mark_bar().encode(
+        
+        # 막대 차트
+        bars = alt.Chart(df).mark_bar().encode(
             y=alt.Y("color_group:N", sort="-x", title=""),
             x=alt.X("kg:Q", title=value_title),
             color=alt.Color("color_group:N", scale=_color_scale_color_group(), legend=None),
             tooltip=[alt.Tooltip("color_group:N", title="색상계열"), alt.Tooltip("kg:Q", title=value_title, format=",.1f")],
-        ).properties(height=240)
+        )
+        
+        # 텍스트 레이블 (막대 끝에 값 표시)
+        text = alt.Chart(df).mark_text(
+            align='left',
+            baseline='middle',
+            dx=3,  # 막대 끝에서 3px 오른쪽
+            fontSize=11,
+            fontWeight='bold'
+        ).encode(
+            y=alt.Y("color_group:N", sort="-x", title=""),
+            x=alt.X("kg:Q"),
+            text=alt.Text("kg:Q", format=",.1f"),
+            color=alt.value('#333333')
+        )
+        
+        return (bars + text).properties(height=240)
 
     c1, c2, c3 = st.columns(3)
     with c1:
