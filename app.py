@@ -668,7 +668,7 @@ st.markdown(
             📊 실시간 재고 · 점도 · Lot 추적 통합 관리 시스템
         </h3>
         <p style='margin: 0.5rem 0 0 0; font-size: 0.9rem; opacity: 0.9;'>
-            ✅ 대시보드 | ✅ 요약 | ✅ 재고관리 | ✅ 바인더 입출고 | ✅ 신규 입력 | ✅ 빠른검색
+            📊 대시보드 | 📌 요약 | 📝 신규 입력 | 📦 재고관리 | 🧪 점도기준관리 | 📦 바인더 입출고
         </p>
     </div>
     """,
@@ -756,8 +756,8 @@ c_s_pc = find_col(single_df, "제품코드")
 # ==========================================================
 # Tabs
 # ==========================================================
-tab_dash, tab_summary, tab_stock, tab_binder, tab_input, tab_search = st.tabs(
-    ["📊 대시보드", "📌 요약", "📦 액상잉크 재고관리", "📦 바인더 입출고", "📝 신규 입력", "🔎 빠른검색"]
+tab_dash, tab_summary, tab_input, tab_stock, tab_visc_std, tab_binder = st.tabs(
+    ["📊 대시보드", "📌 요약", "📝 신규 입력", "📦 액상잉크 재고관리", "🧪 점도 기준관리", "📦 바인더 입출고"]
 )
 
 # ==========================================================
@@ -1056,8 +1056,8 @@ def render_stock_tab():
     day_span = max(1, (end - start).days + 1)
     avg_daily_use = total_used / day_span if day_span else 0.0
 
-    # KPI 카드
-    st.markdown("### 📊 주요 지표")
+    # 전체 KPI 카드
+    st.markdown("### 📊 전체 주요 지표")
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("📅 최신 업데이트", latest_date.date().isoformat())
     k2.metric("📦 현재 총 재고", f"{total_stock:,.1f} kg")
@@ -1067,12 +1067,95 @@ def render_stock_tab():
     k6.metric("⚡ 일평균 사용", f"{avg_daily_use:,.1f} kg")
 
     st.markdown('<div class="kpi-note">💡 입고는 "하루 사용량"이 음수로 기입된 경우(재고 증가)를 입고로 추정합니다.</div>', unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # 색상별 상세 지표 (NEW!)
+    st.markdown("### 🎨 색상별 상세 지표")
+    
+    # 색상별 집계
+    color_latest = latest_df.groupby("color_group", as_index=False).agg({
+        "curr_stock_kg": "sum"
+    }).rename(columns={"curr_stock_kg": "현재재고"})
+    
+    color_period = hist_f.groupby("color_group", as_index=False).agg({
+        "used_kg": "sum",
+        "inbound_kg": "sum"
+    }).rename(columns={"used_kg": "기간사용량", "inbound_kg": "기간입고량"})
+    
+    color_stats = color_latest.merge(color_period, on="color_group", how="outer").fillna(0)
+    color_stats["일평균사용"] = color_stats["기간사용량"] / day_span
+    color_stats["재고비율(%)"] = (color_stats["현재재고"] / total_stock * 100).round(1) if total_stock > 0 else 0
+    
+    # 정렬 (재고량 기준 내림차순)
+    color_stats = color_stats.sort_values("현재재고", ascending=False)
+    
+    # 색상별 카드 형태로 표시
+    st.markdown('<div style="display: flex; flex-wrap: wrap; gap: 1rem;">', unsafe_allow_html=True)
+    
+    for idx, row in color_stats.iterrows():
+        color = row["color_group"]
+        stock = row["현재재고"]
+        used = row["기간사용량"]
+        inbound = row["기간입고량"]
+        daily = row["일평균사용"]
+        ratio = row["재고비율(%)"]
+        
+        # 색상별 배경색 (연하게)
+        color_map = {
+            "BLACK": "#f3f4f6",
+            "BLUE": "#dbeafe",
+            "GREEN": "#d1fae5",
+            "YELLOW": "#fef3c7",
+            "RED": "#fee2e2",
+            "PINK": "#fce7f3",
+            "WHITE": "#ffffff",
+            "OTHER": "#f3f4f6"
+        }
+        bg_color = color_map.get(color, "#f3f4f6")
+        
+        st.markdown(
+            f"""
+            <div style='background: {bg_color}; 
+                        padding: 1rem; 
+                        border-radius: 10px; 
+                        border: 2px solid #e5e7eb;
+                        margin-bottom: 0.5rem;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
+                <div style='font-weight: 800; font-size: 1.1rem; margin-bottom: 0.5rem; color: #1f2937;'>
+                    🎨 {color}
+                </div>
+                <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.85rem;'>
+                    <div>
+                        <div style='color: #6b7280; font-size: 0.75rem;'>📦 현재 재고</div>
+                        <div style='font-weight: 700; color: #1f2937;'>{stock:,.1f} kg ({ratio:.1f}%)</div>
+                    </div>
+                    <div>
+                        <div style='color: #6b7280; font-size: 0.75rem;'>📉 기간 사용량</div>
+                        <div style='font-weight: 700; color: #1f2937;'>{used:,.1f} kg</div>
+                    </div>
+                    <div>
+                        <div style='color: #6b7280; font-size: 0.75rem;'>📥 기간 입고량</div>
+                        <div style='font-weight: 700; color: #1f2937;'>{inbound:,.1f} kg</div>
+                    </div>
+                    <div>
+                        <div style='color: #6b7280; font-size: 0.75rem;'>⚡ 일평균 사용</div>
+                        <div style='font-weight: 700; color: #1f2937;'>{daily:,.1f} kg/일</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
     st.divider()
 
     # ---------- 1) 색상계열 바차트 ----------
     inv = latest_df.groupby("color_group", as_index=False)["curr_stock_kg"].sum().rename(columns={"curr_stock_kg": "kg"}).sort_values("kg", ascending=False)
     use = hist_f.groupby("color_group", as_index=False)["used_kg"].sum().rename(columns={"used_kg": "kg"}).sort_values("kg", ascending=False)
-    inbound = hist_f.groupby("color_group", as_index=False)["inbound_kg"].sum().rename(columns={"inbound_kg": "kg"}).sort_values("kg", ascending=False)
+    inbound_chart = hist_f.groupby("color_group", as_index=False)["inbound_kg"].sum().rename(columns={"inbound_kg": "kg"}).sort_values("kg", ascending=False)
 
     def bar_chart(df: pd.DataFrame, value_title: str):
         if df.empty:
@@ -1127,7 +1210,7 @@ def render_stock_tab():
     with c3:
         st.markdown('<div class="chart-container">', unsafe_allow_html=True)
         st.markdown("**3) 기간 입고 (추정)**")
-        ch = bar_chart(inbound, "입고(kg)")
+        ch = bar_chart(inbound_chart, "입고(kg)")
         if ch is not None:
             st.altair_chart(ch, use_container_width=True)
         else:
@@ -1146,7 +1229,7 @@ def render_stock_tab():
         hist_f[hist_f["color_group"].isin(sel_keys)]
         .groupby(["date", "color_group"], as_index=False)["used_kg"].sum()
     )
-    total = hist_f.groupby("date", as_index=False)["used_kg"].sum().rename(columns={"used_kg": "TOTAL"})
+    total_line_data = hist_f.groupby("date", as_index=False)["used_kg"].sum().rename(columns={"used_kg": "TOTAL"})
 
     st.markdown('<div class="chart-container">', unsafe_allow_html=True)
     line = alt.Chart(daily).mark_line(point=True, strokeWidth=2.5).encode(
@@ -1159,7 +1242,7 @@ def render_stock_tab():
             alt.Tooltip("used_kg:Q", title="사용량(kg)", format=",.1f"),
         ],
     )
-    total_line = alt.Chart(total).mark_line(point=True, strokeDash=[6, 3], strokeWidth=3, color='#374151').encode(
+    total_line = alt.Chart(total_line_data).mark_line(point=True, strokeDash=[6, 3], strokeWidth=3, color='#374151').encode(
         x="date:T",
         y=alt.Y("TOTAL:Q", title="사용량(kg)"),
         tooltip=[alt.Tooltip("date:T", title="날짜"), alt.Tooltip("TOTAL:Q", title="TOTAL(kg)", format=",.1f")],
@@ -1194,6 +1277,273 @@ def render_stock_tab():
     else:
         st.warning(f"⚠️ 커버리지 {warn_days}일 이하 품목이 **{len(alert)}개** 있습니다. 발주를 검토해주세요. (상위 30개 표시)")
         st.dataframe(alert, use_container_width=True, height=360)
+
+# ==========================================================
+# Render: Viscosity Standard Management (점도 기준 관리)
+# ==========================================================
+def render_visc_standard_tab():
+    st.markdown('<div class="section-title">🧪 색상별 점도 기준 관리</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">색상별로 점도 상/하한 기준을 설정하고 적합/부적합을 자동 판정합니다</div>', unsafe_allow_html=True)
+    
+    # 세션 스테이트 초기화 (색상별 기준값 저장)
+    if "visc_standards" not in st.session_state:
+        st.session_state["visc_standards"] = {
+            "BLACK": {"lower": 1800, "upper": 2200},
+            "BLUE": {"lower": 1800, "upper": 2200},
+            "GREEN": {"lower": 1800, "upper": 2200},
+            "YELLOW": {"lower": 1800, "upper": 2200},
+            "RED": {"lower": 1800, "upper": 2200},
+            "PINK": {"lower": 1800, "upper": 2200},
+            "WHITE": {"lower": 1800, "upper": 2200},
+            "OTHER": {"lower": 1800, "upper": 2200},
+        }
+    
+    # 기준값 설정 섹션
+    st.markdown("### ⚙️ 색상별 점도 기준값 설정")
+    st.markdown('<div class="kpi-note">💡 각 색상별로 점도 상한/하한 기준을 입력하세요. 이 기준으로 자동 판정됩니다.</div>', unsafe_allow_html=True)
+    
+    with st.expander("🎨 기준값 설정 (클릭하여 펼치기)", expanded=True):
+        cols = st.columns(4)
+        for idx, color in enumerate(COLOR_KEYS):
+            with cols[idx % 4]:
+                st.markdown(f"**{color}**")
+                lower = st.number_input(
+                    f"하한 (cP)",
+                    min_value=0,
+                    value=st.session_state["visc_standards"][color]["lower"],
+                    step=100,
+                    key=f"lower_{color}"
+                )
+                upper = st.number_input(
+                    f"상한 (cP)",
+                    min_value=0,
+                    value=st.session_state["visc_standards"][color]["upper"],
+                    step=100,
+                    key=f"upper_{color}"
+                )
+                st.session_state["visc_standards"][color] = {"lower": lower, "upper": upper}
+    
+    st.divider()
+    
+    # 점도 데이터 분석
+    if not (c_s_date and c_s_visc and c_s_pc and c_s_cg):
+        st.warning("⚠️ 단일색 시트에 필요한 컬럼(입고일/점도측정값/제품코드/색상군)이 없습니다.")
+        return
+    
+    df = single_df.copy()
+    df[c_s_date] = pd.to_datetime(df[c_s_date], errors="coerce")
+    df["_점도"] = pd.to_numeric(df[c_s_visc].astype(str).str.replace(",", "", regex=False), errors="coerce")
+    df["_색상군"] = df[c_s_cg].apply(normalize_color_group)
+    df[c_s_pc] = df[c_s_pc].apply(normalize_product_code)
+    
+    df = df.dropna(subset=[c_s_date, "_점도", "_색상군"])
+    
+    if df.empty:
+        st.info("📊 분석할 점도 데이터가 없습니다.")
+        return
+    
+    # 기준값 적용하여 판정
+    def judge_viscosity(row):
+        color = row["_색상군"]
+        visc = row["_점도"]
+        std = st.session_state["visc_standards"].get(color, {"lower": 0, "upper": 99999})
+        
+        if visc < std["lower"]:
+            return "부적합 (하한 미달)"
+        elif visc > std["upper"]:
+            return "부적합 (상한 초과)"
+        else:
+            return "적합"
+    
+    df["자동판정"] = df.apply(judge_viscosity, axis=1)
+    
+    # 기간 필터
+    st.markdown("### 📅 조회 기간 설정")
+    dmin, dmax = safe_date_bounds(df[c_s_date])
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        period = st.selectbox("기간 선택", ["최근 7일", "최근 30일", "최근 90일", "전체"], index=1)
+    with c2:
+        if period == "최근 7일":
+            start_date = max(dmin, dmax - dt.timedelta(days=6))
+        elif period == "최근 30일":
+            start_date = max(dmin, dmax - dt.timedelta(days=29))
+        elif period == "최recent 90일":
+            start_date = max(dmin, dmax - dt.timedelta(days=89))
+        else:
+            start_date = dmin
+        st.write(f"**📅 {start_date} ~ {dmax}**")
+    
+    df_filtered = df[(df[c_s_date].dt.date >= start_date) & (df[c_s_date].dt.date <= dmax)].copy()
+    
+    # KPI 카드
+    st.markdown("### 📊 판정 결과 요약")
+    total = len(df_filtered)
+    ok_count = len(df_filtered[df_filtered["자동판정"] == "적합"])
+    ng_lower = len(df_filtered[df_filtered["자동판정"] == "부적합 (하한 미달)"])
+    ng_upper = len(df_filtered[df_filtered["자동판정"] == "부적합 (상한 초과)"])
+    ng_total = ng_lower + ng_upper
+    ok_rate = (ok_count / total * 100) if total > 0 else 0
+    
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("📝 총 측정", f"{total:,} 건")
+    k2.metric("✅ 적합", f"{ok_count:,} 건")
+    k3.metric("❌ 부적합", f"{ng_total:,} 건")
+    k4.metric("📉 하한 미달", f"{ng_lower:,} 건")
+    k5.metric("📈 상한 초과", f"{ng_upper:,} 건")
+    
+    # 적합률 표시
+    if ok_rate >= 95:
+        st.markdown(f'<div class="status-badge-success">✅ 적합률: {ok_rate:.1f}% (우수)</div>', unsafe_allow_html=True)
+    elif ok_rate >= 90:
+        st.markdown(f'<div class="status-badge-warning">⚠️ 적합률: {ok_rate:.1f}% (주의)</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="status-badge-error">🚨 적합률: {ok_rate:.1f}% (위험)</div>', unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # 색상별 판정 현황
+    st.markdown("### 🎨 색상별 판정 현황")
+    
+    color_summary = df_filtered.groupby("_색상군").agg({
+        "_점도": ["count", "mean", "min", "max"],
+        "자동판정": lambda x: (x == "적합").sum()
+    }).reset_index()
+    
+    color_summary.columns = ["색상군", "측정건수", "평균점도", "최소점도", "최대점도", "적합건수"]
+    color_summary["부적합건수"] = color_summary["측정건수"] - color_summary["적합건수"]
+    color_summary["적합률(%)"] = (color_summary["적합건수"] / color_summary["측정건수"] * 100).round(1)
+    color_summary["기준하한"] = color_summary["색상군"].apply(lambda x: st.session_state["visc_standards"][x]["lower"])
+    color_summary["기준상한"] = color_summary["색상군"].apply(lambda x: st.session_state["visc_standards"][x]["upper"])
+    
+    color_summary = color_summary.sort_values("부적합건수", ascending=False)
+    
+    st.dataframe(
+        color_summary[[
+            "색상군", "측정건수", "적합건수", "부적합건수", "적합률(%)",
+            "기준하한", "기준상한", "평균점도", "최소점도", "최대점도"
+        ]],
+        use_container_width=True,
+        height=320
+    )
+    
+    st.divider()
+    
+    # 색상별 점도 분포 차트
+    st.markdown("### 📊 색상별 점도 분포 및 기준선")
+    
+    selected_colors = st.multiselect(
+        "🎨 표시할 색상 선택",
+        COLOR_KEYS,
+        default=[k for k in COLOR_KEYS if k in df_filtered["_색상군"].unique()][:4]
+    )
+    
+    if selected_colors:
+        df_chart = df_filtered[df_filtered["_색상군"].isin(selected_colors)].copy()
+        
+        # 기준선 데이터 생성
+        standards_data = []
+        for color in selected_colors:
+            std = st.session_state["visc_standards"][color]
+            standards_data.append({"색상군": color, "기준": "하한", "값": std["lower"]})
+            standards_data.append({"색상군": color, "기준": "상한", "값": std["upper"]})
+        
+        standards_df = pd.DataFrame(standards_data)
+        
+        # 박스플롯 차트
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        
+        # 점 차트 (실제 측정값)
+        points = alt.Chart(df_chart).mark_circle(size=60, opacity=0.6).encode(
+            x=alt.X("_색상군:N", title="색상군"),
+            y=alt.Y("_점도:Q", title="점도 (cP)", scale=alt.Scale(zero=False)),
+            color=alt.Color("_색상군:N", scale=_color_scale_color_group(), legend=None),
+            tooltip=[
+                alt.Tooltip("_색상군:N", title="색상군"),
+                alt.Tooltip("_점도:Q", title="점도", format=",.0f"),
+                alt.Tooltip(c_s_pc + ":N", title="제품코드"),
+                alt.Tooltip("자동판정:N", title="판정")
+            ]
+        )
+        
+        # 평균선
+        mean_line = alt.Chart(df_chart).mark_rule(color='#374151', strokeWidth=2).encode(
+            x=alt.X("_색상군:N"),
+            y=alt.Y("mean(_점도):Q"),
+            tooltip=[alt.Tooltip("mean(_점도):Q", title="평균", format=",.0f")]
+        )
+        
+        # 기준선 (상한/하한)
+        lower_line = alt.Chart(standards_df[standards_df["기준"] == "하한"]).mark_rule(
+            color='#ef4444', strokeDash=[5, 5], strokeWidth=2
+        ).encode(
+            x=alt.X("색상군:N"),
+            y=alt.Y("값:Q"),
+            tooltip=[alt.Tooltip("값:Q", title="하한", format=",.0f")]
+        )
+        
+        upper_line = alt.Chart(standards_df[standards_df["기준"] == "상한"]).mark_rule(
+            color='#ef4444', strokeDash=[5, 5], strokeWidth=2
+        ).encode(
+            x=alt.X("색상군:N"),
+            y=alt.Y("값:Q"),
+            tooltip=[alt.Tooltip("값:Q", title="상한", format=",.0f")]
+        )
+        
+        chart = (points + mean_line + lower_line + upper_line).properties(height=400)
+        st.altair_chart(chart, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.caption("💡 회색 실선: 평균값 | 빨간 점선: 상한/하한 기준")
+    
+    st.divider()
+    
+    # 부적합 상세 내역
+    st.markdown("### ⚠️ 부적합 상세 내역")
+    
+    ng_data = df_filtered[df_filtered["자동판정"] != "적합"].copy()
+    
+    if ng_data.empty:
+        st.success("✅ 선택 기간 내 부적합 건이 없습니다!")
+    else:
+        st.warning(f"⚠️ 총 {len(ng_data)}건의 부적합이 발견되었습니다.")
+        
+        # 부적합 유형 선택
+        ng_type = st.radio(
+            "부적합 유형 필터",
+            ["전체", "하한 미달만", "상한 초과만"],
+            horizontal=True
+        )
+        
+        if ng_type == "하한 미달만":
+            ng_data = ng_data[ng_data["자동판정"] == "부적합 (하한 미달)"]
+        elif ng_type == "상한 초과만":
+            ng_data = ng_data[ng_data["자동판정"] == "부적합 (상한 초과)"]
+        
+        # 표시할 컬럼 선택
+        display_data = pd.DataFrame({
+            "입고일": ng_data[c_s_date].dt.date,
+            "색상군": ng_data["_색상군"],
+            "제품코드": ng_data[c_s_pc],
+            "측정값(cP)": ng_data["_점도"].round(0),
+            "기준하한": ng_data["_색상군"].apply(lambda x: st.session_state["visc_standards"][x]["lower"]),
+            "기준상한": ng_data["_색상군"].apply(lambda x: st.session_state["visc_standards"][x]["upper"]),
+            "판정": ng_data["자동판정"],
+            "단일색Lot": ng_data[c_s_lot] if c_s_lot and c_s_lot in ng_data.columns else None,
+        }).sort_values("입고일", ascending=False)
+        
+        st.dataframe(display_data, use_container_width=True, height=400)
+        
+        # CSV 다운로드
+        csv = display_data.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            "📥 부적합 내역 CSV 다운로드",
+            csv,
+            f"부적합내역_{dmax}.csv",
+            "text/csv",
+            key='download-ng-csv'
+        )
 
 # ==========================================================
 # Render: Dashboard tab (Lot 쪽 전반 현황)
@@ -1572,14 +1922,14 @@ with tab_dash:
 with tab_summary:
     render_summary()
 
-with tab_stock:
-    render_stock_tab()
-
-with tab_binder:
-    render_binder_io()
-
 with tab_input:
     render_input_tab()
 
-with tab_search:
-    render_search()
+with tab_stock:
+    render_stock_tab()
+
+with tab_visc_std:
+    render_visc_standard_tab()
+
+with tab_binder:
+    render_binder_io()
