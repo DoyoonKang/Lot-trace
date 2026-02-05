@@ -996,7 +996,7 @@ def render_summary():
 # ==========================================================
 def render_stock_tab():
     st.markdown('<div class="section-title">📦 액상잉크 재고관리</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">재고 현황 · 입고 추정 · 사용량 추이를 색상별로 분석합니다</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">재고 현황 · 입고 추정 · 사용량 추이를 제품별로 분석합니다</div>', unsafe_allow_html=True)
 
     if not stock_xlsx_path or not Path(stock_xlsx_path).exists():
         st.error("❌ 재고 파일 경로가 올바르지 않습니다. 좌측 사이드바에서 재고 파일을 설정해주세요.")
@@ -1070,85 +1070,129 @@ def render_stock_tab():
     
     st.divider()
     
-    # 색상별 상세 지표 (NEW!)
-    st.markdown("### 🎨 색상별 상세 지표")
+    # 제품별 상세 지표 (NEW!)
+    st.markdown("### 📦 제품별 상세 지표")
     
-    # 색상별 집계
-    color_latest = latest_df.groupby("color_group", as_index=False).agg({
-        "curr_stock_kg": "sum"
+    # 제품별 집계
+    product_latest = latest_df.groupby("product_code", as_index=False).agg({
+        "curr_stock_kg": "sum",
+        "color_group": "first"
     }).rename(columns={"curr_stock_kg": "현재재고"})
     
-    color_period = hist_f.groupby("color_group", as_index=False).agg({
+    product_period = hist_f.groupby("product_code", as_index=False).agg({
         "used_kg": "sum",
         "inbound_kg": "sum"
     }).rename(columns={"used_kg": "기간사용량", "inbound_kg": "기간입고량"})
     
-    color_stats = color_latest.merge(color_period, on="color_group", how="outer").fillna(0)
-    color_stats["일평균사용"] = color_stats["기간사용량"] / day_span
-    color_stats["재고비율(%)"] = (color_stats["현재재고"] / total_stock * 100).round(1) if total_stock > 0 else 0
+    product_stats = product_latest.merge(product_period, on="product_code", how="outer").fillna(0)
+    product_stats["일평균사용"] = product_stats["기간사용량"] / day_span
+    product_stats["재고비율(%)"] = (product_stats["현재재고"] / total_stock * 100).round(1) if total_stock > 0 else 0
     
     # 정렬 (재고량 기준 내림차순)
-    color_stats = color_stats.sort_values("현재재고", ascending=False)
+    product_stats = product_stats.sort_values("현재재고", ascending=False)
     
-    # 색상별 카드 형태로 표시
-    st.markdown('<div style="display: flex; flex-wrap: wrap; gap: 1rem;">', unsafe_allow_html=True)
-    
-    for idx, row in color_stats.iterrows():
-        color = row["color_group"]
-        stock = row["현재재고"]
-        used = row["기간사용량"]
-        inbound = row["기간입고량"]
-        daily = row["일평균사용"]
-        ratio = row["재고비율(%)"]
-        
-        # 색상별 배경색 (연하게)
-        color_map = {
-            "BLACK": "#f3f4f6",
-            "BLUE": "#dbeafe",
-            "GREEN": "#d1fae5",
-            "YELLOW": "#fef3c7",
-            "RED": "#fee2e2",
-            "PINK": "#fce7f3",
-            "WHITE": "#ffffff",
-            "OTHER": "#f3f4f6"
-        }
-        bg_color = color_map.get(color, "#f3f4f6")
-        
-        st.markdown(
-            f"""
-            <div style='background: {bg_color}; 
-                        padding: 1rem; 
-                        border-radius: 10px; 
-                        border: 2px solid #e5e7eb;
-                        margin-bottom: 0.5rem;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
-                <div style='font-weight: 800; font-size: 1.1rem; margin-bottom: 0.5rem; color: #1f2937;'>
-                    🎨 {color}
-                </div>
-                <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.85rem;'>
-                    <div>
-                        <div style='color: #6b7280; font-size: 0.75rem;'>📦 현재 재고</div>
-                        <div style='font-weight: 700; color: #1f2937;'>{stock:,.1f} kg ({ratio:.1f}%)</div>
-                    </div>
-                    <div>
-                        <div style='color: #6b7280; font-size: 0.75rem;'>📉 기간 사용량</div>
-                        <div style='font-weight: 700; color: #1f2937;'>{used:,.1f} kg</div>
-                    </div>
-                    <div>
-                        <div style='color: #6b7280; font-size: 0.75rem;'>📥 기간 입고량</div>
-                        <div style='font-weight: 700; color: #1f2937;'>{inbound:,.1f} kg</div>
-                    </div>
-                    <div>
-                        <div style='color: #6b7280; font-size: 0.75rem;'>⚡ 일평균 사용</div>
-                        <div style='font-weight: 700; color: #1f2937;'>{daily:,.1f} kg/일</div>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
+    # 필터링 옵션
+    col_filter1, col_filter2 = st.columns([3, 7])
+    with col_filter1:
+        color_filter = st.multiselect(
+            "🎨 색상 필터",
+            ["전체"] + COLOR_KEYS,
+            default=["전체"]
         )
+    with col_filter2:
+        search_product = st.text_input("🔍 제품코드 검색", placeholder="예: PL-835, WHITE 등...")
     
-    st.markdown('</div>', unsafe_allow_html=True)
+    # 필터 적용
+    if "전체" not in color_filter and color_filter:
+        product_stats = product_stats[product_stats["color_group"].isin(color_filter)]
+    
+    if search_product:
+        product_stats = product_stats[
+            product_stats["product_code"].str.contains(search_product, case=False, na=False)
+        ]
+    
+    # 제품 개수 표시
+    st.markdown(f"**총 {len(product_stats)}개 제품**")
+    
+    # 제품별 카드 형태로 표시 (한 줄에 4개씩)
+    if len(product_stats) == 0:
+        st.info("📦 조건에 맞는 제품이 없습니다.")
+    else:
+        # 4개씩 묶어서 표시
+        for i in range(0, len(product_stats), 4):
+            cols = st.columns(4)
+            for j, (idx, row) in enumerate(list(product_stats.iloc[i:i+4].iterrows())):
+                if j >= 4:
+                    break
+                    
+                with cols[j]:
+                    product = row["product_code"]
+                    color = row["color_group"]
+                    stock = row["현재재고"]
+                    used = row["기간사용량"]
+                    inbound = row["기간입고량"]
+                    daily = row["일평균사용"]
+                    ratio = row["재고비율(%)"]
+                    
+                    # 색상별 배경색 (연하게)
+                    color_map = {
+                        "BLACK": "#f3f4f6",
+                        "BLUE": "#dbeafe",
+                        "GREEN": "#d1fae5",
+                        "YELLOW": "#fef3c7",
+                        "RED": "#fee2e2",
+                        "PINK": "#fce7f3",
+                        "WHITE": "#ffffff",
+                        "OTHER": "#f3f4f6"
+                    }
+                    bg_color = color_map.get(color, "#f3f4f6")
+                    
+                    # 재고 상태 아이콘
+                    if stock > 50:
+                        status_icon = "🟢"
+                    elif stock > 20:
+                        status_icon = "🟡"
+                    else:
+                        status_icon = "🔴"
+                    
+                    st.markdown(
+                        f"""
+                        <div style='background: {bg_color}; 
+                                    padding: 1rem; 
+                                    border-radius: 10px; 
+                                    border: 2px solid #e5e7eb;
+                                    margin-bottom: 1rem;
+                                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                                    height: 220px;'>
+                            <div style='font-weight: 800; font-size: 0.95rem; margin-bottom: 0.3rem; color: #1f2937;'>
+                                {status_icon} {product}
+                            </div>
+                            <div style='font-size: 0.7rem; color: #6b7280; margin-bottom: 0.5rem;'>
+                                🎨 {color}
+                            </div>
+                            <div style='font-size: 0.75rem; line-height: 1.6;'>
+                                <div style='margin-bottom: 0.3rem;'>
+                                    <span style='color: #6b7280;'>📦 재고</span><br>
+                                    <span style='font-weight: 700; color: #1f2937; font-size: 0.85rem;'>{stock:,.1f} kg</span>
+                                    <span style='color: #6b7280; font-size: 0.7rem;'> ({ratio:.1f}%)</span>
+                                </div>
+                                <div style='margin-bottom: 0.3rem;'>
+                                    <span style='color: #6b7280;'>📉 사용</span><br>
+                                    <span style='font-weight: 600; color: #1f2937;'>{used:,.1f} kg</span>
+                                </div>
+                                <div style='margin-bottom: 0.3rem;'>
+                                    <span style='color: #6b7280;'>📥 입고</span><br>
+                                    <span style='font-weight: 600; color: #1f2937;'>{inbound:,.1f} kg</span>
+                                </div>
+                                <div>
+                                    <span style='color: #6b7280;'>⚡ 일평균</span><br>
+                                    <span style='font-weight: 600; color: #1f2937;'>{daily:,.1f} kg/일</span>
+                                </div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
     
     st.divider()
 
